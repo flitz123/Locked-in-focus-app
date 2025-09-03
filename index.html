@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Locked In - Focus & App Blocker</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="background-overlay"></div>
+    <div class="center-container">
+        <header>
+            <div class="logo">
+                <h1>Locked In</h1>
+                <p>Focus & App Blocker</p>
+            </div>
+            
+            <nav>
+                <ul>
+                    <li class="active">Focus Session</li>
+                    <li>Block Apps</li>
+                    <li>How to Use</li>
+                </ul>
+                <label class="switch">
+                    <input type="checkbox" id="darkModeToggle" title="Toggle dark mode">
+                    <span class="slider"></span>
+                </label>
+            </nav>
+        </header>
+
+        <main>
+            <section class="instructions">
+                <h2>Focus Instructions</h2>
+                <p>Stay focused and track your productivity.</p>
+                
+                <div class="getting-started">
+                    <h3>Getting Started</h3>
+                    <ol>
+                        <li><strong>Select Applications:</strong> Choose programs you want to focus on during sessions</li>
+                        <li><strong>Set Block List:</strong> Add distracting apps you want to be reminded about</li>
+                        <li><strong>Set Duration:</strong> Choose your focus period</li>
+                        <li><strong>Start Session:</strong> Begin monitoring your activity</li>
+                    </ol>
+                </div>
+            </section>
+
+            <section class="settings">
+                <div class="duration-setting">
+                    <label for="duration">Duration (minutes):</label>
+                    <input type="number" id="duration" min="1" max="120" value="25">
+                </div>
+            </section>
+
+            <section class="allowed-apps">
+                <h3>Focus Applications</h3>
+                <p>These apps will be monitored during your focus session</p>
+                <ul id="allowedList">
+                    <!-- Allowed apps will be added here dynamically -->
+                </ul>
+                <button id="addAllowedApp" class="add-btn">+ Add Application</button>
+            </section>
+
+            <section class="blocked-apps">
+                <h3>Blocked Applications</h3>
+                <p>You'll receive reminders when opening these distracting apps</p>
+                <ul id="blockedList">
+                    <!-- Blocked apps will be added here dynamically -->
+                </ul>
+                <button id="addBlockedApp" class="add-btn">+ Add to Block List</button>
+            </section>
+
+            <div class="actions">
+                <button id="startSession" class="primary-btn">Start Focus Session</button>
+                <button id="stopSession" class="secondary-btn" disabled>End Session</button>
+            </div>
+        </main>
+    </div>
+
+    <div id="notificationModal" class="modal">
+        <div class="modal-content">
+            <h3 id="notificationTitle">App Blocked</h3>
+            <p id="notificationMessage">This app is not in your focus list.</p>
+            <div class="modal-actions">
+                <button id="notificationCancel" class="secondary-btn">Stay Focused</button>
+                <button id="notificationConfirm" class="primary-btn">Open Anyway</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="sessionReportModal" class="modal">
+        <div class="modal-content report-content">
+            <h3>Session Report</h3>
+            <div class="report-stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="totalTime">00:00</span>
+                    <span class="stat-label">Total Session Time</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="focusedTime">00:00</span>
+                    <span class="stat-label">Time Spent Focused</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="distractedTime">00:00</span>
+                    <span class="stat-label">Time Distracted</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="blockedAttempts">0</span>
+                    <span class="stat-label">Blocked App Attempts</span>
+                </div>
+            </div>
+            <button id="closeReport" class="primary-btn">Close Report</button>
+        </div>
+    </div>
+
+    <!-- Update script paths to point to src directory -->
+    <script src="src/preload.js"></script>
+    <script src="src/app.js"></script>
+</body>
+</html>
