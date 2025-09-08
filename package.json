@@ -18,14 +18,15 @@
         "blocker",
         "monitor"
     ],
-    "author": "Your Name",
+    "author": "Peace Mumo",
     "license": "MIT",
     "devDependencies": {
         "electron": "^27.0.0",
         "electron-builder": "^24.6.4"
     },
     "dependencies": {
-        "electron-is-dev": "^2.0.0"
+        "electron-is-dev": "^2.0.0",
+        "ps-list": "^8.1.0"
     },
     "build": {
         "appId": "com.yourcompany.lockedin",
@@ -40,7 +41,8 @@
             "build/**/*",
             "index.html",
             "styles.css",
-            "package.json"
+            "package.json",
+            "app.js"
         ],
         "win": {
             "target": [

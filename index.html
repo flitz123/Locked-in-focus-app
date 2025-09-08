@@ -107,13 +107,18 @@
                     <span class="stat-value" id="blockedAttempts">0</span>
                     <span class="stat-label">Blocked App Attempts</span>
                 </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="productivityScore">0%</span>
+                    <span class="stat-label">Productivity Score</span>
+                </div>
             </div>
+            <div id="reportStats"></div>
             <button id="closeReport" class="primary-btn">Close Report</button>
         </div>
     </div>
 
-    <!-- Update script paths to point to src directory -->
     <script src="src/preload.js"></script>
-    <script src="src/app.js"></script>
+    <script src="src/renderer.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>
