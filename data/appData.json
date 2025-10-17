@@ -1,0 +1,125 @@
+{
+  "selectedApps": [],
+  "allowedApps": [
+    {
+      "name": "excel.exe",
+      "type": "Productivity",
+      "isSelected": false,
+      "isAllowed": true,
+      "isBlocked": false
+    }
+  ],
+  "blockedApps": [
+    {
+      "name": "chrome.exe",
+      "type": "Browser",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": true
+    }
+  ],
+  "installedApps": [
+    {
+      "name": "notepad.exe",
+      "type": "Productivity",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "chrome.exe",
+      "type": "Browser",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": true
+    },
+    {
+      "name": "firefox.exe",
+      "type": "Browser",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "code.exe",
+      "type": "Development",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "spotify.exe",
+      "type": "Media",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "discord.exe",
+      "type": "Communication",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "steam.exe",
+      "type": "Gaming",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "photoshop.exe",
+      "type": "Design",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "excel.exe",
+      "type": "Productivity",
+      "isSelected": false,
+      "isAllowed": true,
+      "isBlocked": false
+    },
+    {
+      "name": "word.exe",
+      "type": "Productivity",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "outlook.exe",
+      "type": "Communication",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    },
+    {
+      "name": "teams.exe",
+      "type": "Communication",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    }
+  ],
+  "allowed": [
+    {
+      "name": "excel.exe",
+      "type": "Productivity",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    }
+  ],
+  "blocked": [
+    {
+      "name": "chrome.exe",
+      "type": "Browser",
+      "isSelected": false,
+      "isAllowed": false,
+      "isBlocked": false
+    }
+  ]
+}

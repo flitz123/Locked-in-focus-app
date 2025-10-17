@@ -1,0 +1,7 @@
+{
+  "sessionDuration": 25,
+  "checkInterval": 2000,
+  "enableNotifications": false,
+  "autoStartSession": false,
+  "darkMode": true
+}

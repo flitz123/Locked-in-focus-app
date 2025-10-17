@@ -3,122 +3,420 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Locked In - Focus & App Blocker</title>
+    <title>Locked-In Focus App</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
-    <div class="background-overlay"></div>
-    <div class="center-container">
-        <header>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
             <div class="logo">
-                <h1>Locked In</h1>
-                <p>Focus & App Blocker</p>
+                <h1><i class="fas fa-lock"></i> Locked-In</h1>
+                <p>Focus & Productivity</p>
             </div>
-            
-            <nav>
-                <ul>
-                    <li class="active">Focus Session</li>
-                    <li>Block Apps</li>
-                    <li>How to Use</li>
-                </ul>
-                <label class="switch">
-                    <input type="checkbox" id="darkModeToggle" title="Toggle dark mode">
-                    <span class="slider"></span>
-                </label>
-            </nav>
-        </header>
+            <ul class="nav-menu">
+                <li class="nav-item active" id="nav-dashboard">
+                    <i class="fas fa-chart-line"></i>
+                    Dashboard
+                </li>
+                <li class="nav-item" id="nav-apps">
+                    <i class="fas fa-th-large"></i>
+                    App Management
+                </li>
+                <li class="nav-item" id="nav-detection">
+                    <i class="fas fa-search"></i>
+                    App Detection
+                </li>
+                <li class="nav-item" id="nav-sessions">
+                    <i class="fas fa-history"></i>
+                    Session History
+                </li>
+                <li class="nav-item" id="nav-settings">
+                    <i class="fas fa-cog"></i>
+                    Settings
+                </li>
+            </ul>
+        </div>
 
-        <main>
-            <section class="instructions">
-                <h2>Focus Instructions</h2>
-                <p>Stay focused and track your productivity.</p>
-                
-                <div class="getting-started">
-                    <h3>Getting Started</h3>
-                    <ol>
-                        <li><strong>Select Applications:</strong> Choose programs you want to focus on during sessions</li>
-                        <li><strong>Set Block List:</strong> Add distracting apps you want to be reminded about</li>
-                        <li><strong>Set Duration:</strong> Choose your focus period</li>
-                        <li><strong>Start Session:</strong> Begin monitoring your activity</li>
-                    </ol>
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Dashboard Section -->
+            <div id="dashboardSection" class="section active">
+                <div class="dashboard-stats">
+                    <div class="stat-card">
+                        <i class="fas fa-check-circle"></i>
+                        <span class="stat-number" id="selectedAppsCount">0</span>
+                        <span class="stat-label">Selected Apps</span>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fas fa-ban"></i>
+                        <span class="stat-number" id="blockedAppsCount">0</span>
+                        <span class="stat-label">Blocked Apps</span>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fas fa-clock"></i>
+                        <span class="stat-number" id="totalSessions">0</span>
+                        <span class="stat-label">Total Sessions</span>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fas fa-chart-pie"></i>
+                        <span class="stat-number" id="productivityScore">0%</span>
+                        <span class="stat-label">Avg. Productivity</span>
+                    </div>
                 </div>
-            </section>
 
-            <section class="settings">
-                <div class="duration-setting">
-                    <label for="duration">Duration (minutes):</label>
-                    <input type="number" id="duration" min="1" max="120" value="25">
+                <div class="session-controls" id="sessionControls">
+                    <div class="session-header">
+                        <h2>Focus Session</h2>
+                        <div class="session-status" id="sessionStatus">
+                            <i class="fas fa-circle text-secondary"></i> No Active Session
+                        </div>
+                    </div>
+                    <form class="session-form" id="sessionForm">
+                        <div class="form-group">
+                            <label for="sessionName">Session Name</label>
+                            <input type="text" id="sessionName" class="form-control" 
+                                   placeholder="Enter session name..." value="My Focus Session">
+                        </div>
+                        <button type="button" class="btn btn-success" id="startSessionBtn">
+                            <i class="fas fa-play"></i> Start Session
+                        </button>
+                        <button type="button" class="btn btn-danger" id="stopSessionBtn" disabled>
+                            <i class="fas fa-stop"></i> Stop Session
+                        </button>
+                    </form>
                 </div>
-            </section>
 
-            <section class="allowed-apps">
-                <h3>Focus Applications</h3>
-                <p>These apps will be monitored during your focus session</p>
-                <ul id="allowedList">
-                    <!-- Allowed apps will be added here dynamically -->
-                </ul>
-                <button id="addAllowedApp" class="add-btn">+ Add Application</button>
-            </section>
+                <div class="focus-display">
+                    <div class="focus-status" id="focusDisplay">
+                        <div class="current-app" id="currentApp">No active app</div>
+                        <div class="time-display">
+                            <div class="time-item">
+                                <div class="time-label">Focused Time</div>
+                                <div class="time-value" id="focusTime">0s</div>
+                            </div>
+                            <div class="time-item">
+                                <div class="time-label">Distracted Time</div>
+                                <div class="time-value" id="distractionTime">0s</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-            <section class="blocked-apps">
-                <h3>Blocked Applications</h3>
-                <p>You'll receive reminders when opening these distracting apps</p>
-                <ul id="blockedList">
-                    <!-- Blocked apps will be added here dynamically -->
-                </ul>
-                <button id="addBlockedApp" class="add-btn">+ Add to Block List</button>
-            </section>
+                <div class="apps-section">
+                    <div class="app-list-container">
+                        <div class="app-list-header">
+                            <h3><i class="fas fa-check-circle text-success"></i> Selected Apps</h3>
+                            <span class="app-count" id="selectedAppsCountHeader">0</span>
+                        </div>
+                        <div class="app-list" id="selectedAppsList">
+                            <div class="empty-state">
+                                <i class="fas fa-check-circle"></i>
+                                <p>No selected applications</p>
+                            </div>
+                        </div>
+                    </div>
 
-            <div class="actions">
-                <button id="startSession" class="primary-btn">Start Focus Session</button>
-                <button id="stopSession" class="secondary-btn" disabled>End Session</button>
+                    <div class="app-list-container">
+                        <div class="app-list-header">
+                            <h3><i class="fas fa-ban text-danger"></i> Blocked Apps</h3>
+                            <span class="app-count" id="blockedAppsCountHeader">0</span>
+                        </div>
+                        <div class="app-list" id="blockedAppsList">
+                            <div class="empty-state">
+                                <i class="fas fa-ban"></i>
+                                <p>No blocked applications</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </main>
+
+            <!-- App Management Section -->
+            <div id="appsSection" class="section">
+                <h2>Application Management</h2>
+                <p class="mb-20">Manage your selected, allowed, and blocked applications.</p>
+
+                <div class="apps-section">
+                    <div class="app-list-container">
+                        <div class="app-list-header">
+                            <h3><i class="fas fa-check-circle text-success"></i> Selected Apps</h3>
+                            <span class="app-count" id="selectedAppsCountManage">0</span>
+                        </div>
+                        <div class="app-list" id="selectedAppsListManage">
+                            <div class="empty-state">
+                                <i class="fas fa-check-circle"></i>
+                                <p>No selected applications</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="app-list-container">
+                        <div class="app-list-header">
+                            <h3><i class="fas fa-check text-info"></i> Allowed Apps</h3>
+                            <span class="app-count" id="allowedAppsCount">0</span>
+                        </div>
+                        <div class="app-list" id="allowedAppsList">
+                            <div class="empty-state">
+                                <i class="fas fa-check"></i>
+                                <p>No allowed applications</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="app-list-container">
+                        <div class="app-list-header">
+                            <h3><i class="fas fa-ban text-danger"></i> Blocked Apps</h3>
+                            <span class="app-count" id="blockedAppsCountManage">0</span>
+                        </div>
+                        <div class="app-list" id="blockedAppsListManage">
+                            <div class="empty-state">
+                                <i class="fas fa-ban"></i>
+                                <p>No blocked applications</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- App Detection Section -->
+            <div id="detectionSection" class="section">
+                <h2>Application Detection</h2>
+                <p class="mb-20">Scan your machine for installed applications and add them to your lists.</p>
+
+                <div class="detection-controls">
+                    <div class="control-group">
+                        <button class="btn btn-primary" id="scanAppsBtn">
+                            <i class="fas fa-search"></i> Scan for Applications
+                        </button>
+                        <button class="btn btn-success" id="addManualAppBtn">
+                            <i class="fas fa-plus"></i> Add Manual App
+                        </button>
+                        <button class="btn btn-warning" id="uploadAppBtn">
+                            <i class="fas fa-upload"></i> Upload App File
+                        </button>
+                        <button class="btn btn-info" id="packageManagerBtn">
+                            <i class="fas fa-box"></i> Package Manager
+                        </button>
+                        <div class="form-group search-box">
+                            <input type="text" id="searchApps" class="form-control" 
+                                   placeholder="Search applications...">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="app-list-container">
+                    <div class="app-list-header">
+                        <h3><i class="fas fa-laptop"></i> Detected Applications</h3>
+                        <span class="app-count" id="detectedAppsCount">0</span>
+                    </div>
+                    <div class="app-list" id="detectedAppsList">
+                        <div class="empty-state">
+                            <i class="fas fa-search"></i>
+                            <p>Scan your machine to detect applications</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Session History Section -->
+            <div id="sessionsSection" class="section">
+                <h2>Session History</h2>
+                <p class="mb-20">Review your past focus sessions and productivity metrics.</p>
+
+                <div class="control-group mb-20">
+                    <button class="btn btn-danger" id="clearDataBtn">
+                        <i class="fas fa-trash"></i> Clear All Data
+                    </button>
+                    <button class="btn btn-success" id="exportDataBtn">
+                        <i class="fas fa-download"></i> Export Data
+                    </button>
+                </div>
+
+                <div class="app-list-container">
+                    <div class="app-list-header">
+                        <h3><i class="fas fa-history"></i> Session History</h3>
+                    </div>
+                    <div class="app-list" id="sessionHistoryList">
+                        <div class="empty-state">
+                            <i class="fas fa-history"></i>
+                            <p>No session history available</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Section -->
+            <div id="settingsSection" class="section">
+                <h2>Settings</h2>
+                <p class="mb-20">Configure application behavior and preferences.</p>
+
+                <div class="app-list-container">
+                    <div class="app-list-header">
+                        <h3><i class="fas fa-cog"></i> Application Settings</h3>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group mb-20">
+                            <label for="checkInterval">Window Check Interval (ms)</label>
+                            <input type="number" id="checkInterval" class="form-control" value="2000" min="500" max="10000">
+                            <small>How often to check for active windows (lower = more responsive, higher = less CPU usage)</small>
+                        </div>
+
+                        <div class="form-group mb-20">
+                            <label for="autoStart">Auto-start with system</label>
+                            <input type="checkbox" id="autoStart" class="form-control">
+                        </div>
+
+                        <div class="form-group mb-20">
+                            <label for="notifications">Enable Notifications</label>
+                            <input type="checkbox" id="notifications" class="form-control" checked>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="theme">Theme</label>
+                            <select id="theme" class="form-control">
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                                <option value="auto">Auto</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <div id="notificationModal" class="modal">
+    <!-- Modals -->
+    <!-- Add Manual App Modal -->
+    <div id="addManualAppModal" class="modal">
         <div class="modal-content">
-            <h3 id="notificationTitle">App Blocked</h3>
-            <p id="notificationMessage">This app is not in your focus list.</p>
-            <div class="modal-actions">
-                <button id="notificationCancel" class="secondary-btn">Stay Focused</button>
-                <button id="notificationConfirm" class="primary-btn">Open Anyway</button>
+            <div class="modal-header">
+                <h3><i class="fas fa-plus"></i> Add Manual Application</h3>
+                <button class="close-btn" id="closeManualModal">&times;</button>
+            </div>
+            <form id="manualAppForm">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="manualAppName">Application Name</label>
+                        <input type="text" id="manualAppName" class="form-control" 
+                               placeholder="Enter application name..." required>
+                    </div>
+                    <div class="form-group">
+                        <label for="manualAppCategory">Category</label>
+                        <select id="manualAppCategory" class="form-control">
+                            <option value="selected">Selected</option>
+                            <option value="allowed">Allowed</option>
+                            <option value="blocked">Blocked</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="closeManualModal2">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Application</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Upload App Modal -->
+    <div id="uploadAppModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-upload"></i> Upload Application File</h3>
+                <button class="close-btn" id="closeUploadModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Upload an application file or executable to add it to your lists.</p>
+                <div class="form-group">
+                    <label for="appFile">Select Application File</label>
+                    <input type="file" id="appFile" class="form-control" accept=".exe,.app,.lnk,.desktop">
+                </div>
+                <div class="form-group">
+                    <label for="uploadAppCategory">Category</label>
+                    <select id="uploadAppCategory" class="form-control">
+                        <option value="selected">Selected</option>
+                        <option value="allowed">Allowed</option>
+                        <option value="blocked">Blocked</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="closeUploadModal2">Cancel</button>
+                <button type="button" class="btn btn-primary" id="uploadAppConfirm">Upload</button>
             </div>
         </div>
     </div>
 
-    <div id="sessionReportModal" class="modal">
-        <div class="modal-content report-content">
-            <h3>Session Report</h3>
-            <div class="report-stats">
-                <div class="stat-item">
-                    <span class="stat-value" id="totalTime">00:00</span>
-                    <span class="stat-label">Total Session Time</span>
+    <!-- Package Manager Modal -->
+    <div id="packageManagerModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-box"></i> Package Manager</h3>
+                <button class="close-btn" id="closePackageModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Browse and install applications using package managers.</p>
+                <div class="form-group">
+                    <label for="packageName">Package Name</label>
+                    <input type="text" id="packageName" class="form-control" 
+                           placeholder="Enter package name...">
                 </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="focusedTime">00:00</span>
-                    <span class="stat-label">Time Spent Focused</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="distractedTime">00:00</span>
-                    <span class="stat-label">Time Distracted</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="blockedAttempts">0</span>
-                    <span class="stat-label">Blocked App Attempts</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="productivityScore">0%</span>
-                    <span class="stat-label">Productivity Score</span>
+                <div class="form-group">
+                    <label for="packageCategory">Category</label>
+                    <select id="packageCategory" class="form-control">
+                        <option value="selected">Selected</option>
+                        <option value="allowed">Allowed</option>
+                        <option value="blocked">Blocked</option>
+                    </select>
                 </div>
             </div>
-            <div id="reportStats"></div>
-            <button id="closeReport" class="primary-btn">Close Report</button>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="closePackageModal2">Cancel</button>
+                <button type="button" class="btn btn-primary" id="packageInstallBtn">Install</button>
+            </div>
         </div>
     </div>
 
-    <script src="src/preload.js"></script>
-    <script src="src/renderer.js"></script>
-    <script src="app.js"></script>
+    <!-- App Approval Modal -->
+    <div id="approvalModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-question-circle"></i> Application Access Request</h3>
+                <button class="close-btn" id="closeApprovalModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="approvalMessage">This application is requesting access.</p>
+                <input type="hidden" id="approvalRequestId">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-danger" id="denyAppBtn">Deny</button>
+                <button type="button" class="btn btn-success" id="approveAppBtn">Allow</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Session Summary Modal -->
+    <div id="sessionSummaryModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-chart-pie"></i> Session Summary</h3>
+                <button class="close-btn" id="closeSummaryModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="sessionSummaryContent">
+                    <!-- Summary content will be inserted here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="closeSummaryModal2">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification -->
+    <div id="notification" class="notification"></div>
+
+    <script src="renderer.js"></script>
 </body>
 </html>
