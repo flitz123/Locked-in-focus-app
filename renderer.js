@@ -43,13 +43,19 @@ class FocusAppRenderer {
 
         // Modal controls
         document.getElementById('closeManualModal').addEventListener('click', () => this.hideModal('addManualAppModal'));
+        document.getElementById('closeManualModal2').addEventListener('click', () => this.hideModal('addManualAppModal'));
         document.getElementById('closeUploadModal').addEventListener('click', () => this.hideModal('uploadAppModal'));
+        document.getElementById('closeUploadModal2').addEventListener('click', () => this.hideModal('uploadAppModal'));
         document.getElementById('closePackageModal').addEventListener('click', () => this.hideModal('packageManagerModal'));
+        document.getElementById('closePackageModal2').addEventListener('click', () => this.hideModal('packageManagerModal'));
         document.getElementById('closeApprovalModal').addEventListener('click', () => this.hideModal('approvalModal'));
         document.getElementById('closeSummaryModal').addEventListener('click', () => this.hideModal('sessionSummaryModal'));
+        document.getElementById('closeSummaryModal2').addEventListener('click', () => this.hideModal('sessionSummaryModal'));
 
         // Form submissions
         document.getElementById('manualAppForm').addEventListener('submit', (e) => this.handleManualAppSubmit(e));
+        document.getElementById('uploadAppConfirm').addEventListener('click', () => this.handleUploadAppSubmit());
+        document.getElementById('packageInstallBtn').addEventListener('click', () => this.handlePackageAppSubmit());
         
         // App approval
         document.getElementById('approveAppBtn').addEventListener('click', () => this.handleAppApproval(true));
@@ -110,7 +116,9 @@ class FocusAppRenderer {
 
     updateAppLists() {
         this.updateAppList('selectedAppsList', Array.from(this.selectedApps), 'selected');
+        this.updateAppList('selectedAppsListManage', Array.from(this.selectedApps), 'selected');
         this.updateAppList('blockedAppsList', Array.from(this.blockedApps), 'blocked');
+        this.updateAppList('blockedAppsListManage', Array.from(this.blockedApps), 'blocked');
         this.updateAppList('allowedAppsList', Array.from(this.allowedApps), 'allowed');
     }
 
@@ -163,7 +171,12 @@ class FocusAppRenderer {
 
     updateStats() {
         document.getElementById('selectedAppsCount').textContent = this.selectedApps.size;
+        document.getElementById('selectedAppsCountHeader').textContent = this.selectedApps.size;
+        document.getElementById('selectedAppsCountManage').textContent = this.selectedApps.size;
         document.getElementById('blockedAppsCount').textContent = this.blockedApps.size;
+        document.getElementById('blockedAppsCountHeader').textContent = this.blockedApps.size;
+        document.getElementById('blockedAppsCountManage').textContent = this.blockedApps.size;
+        document.getElementById('allowedAppsCount').textContent = this.allowedApps.size;
         document.getElementById('totalSessions').textContent = this.sessionStats.length;
         
         const avgProductivity = this.sessionStats.length > 0 
@@ -181,6 +194,7 @@ class FocusAppRenderer {
             if (result.success) {
                 this.detectedApps = result.apps;
                 this.displayDetectedApps(this.detectedApps);
+                document.getElementById('detectedAppsCount').textContent = result.count;
                 this.showNotification(`Found ${result.count} applications!`, 'success');
             } else {
                 throw new Error(result.error);
@@ -196,6 +210,7 @@ class FocusAppRenderer {
     displayDetectedApps(apps) {
         const container = document.getElementById('detectedAppsList');
         container.innerHTML = '';
+        document.getElementById('detectedAppsCount').textContent = apps.length;
 
         if (apps.length === 0) {
             container.innerHTML = `
@@ -229,6 +244,9 @@ class FocusAppRenderer {
                 <button class="btn btn-sm btn-primary add-to-selected" data-app="${this.escapeHtml(app.name)}">
                     <i class="fas fa-check-circle"></i> Select
                 </button>
+                <button class="btn btn-sm btn-success add-to-allowed" data-app="${this.escapeHtml(app.name)}">
+                    <i class="fas fa-check"></i> Allow
+                </button>
                 <button class="btn btn-sm btn-warning add-to-blocked" data-app="${this.escapeHtml(app.name)}">
                     <i class="fas fa-ban"></i> Block
                 </button>
@@ -243,6 +261,11 @@ class FocusAppRenderer {
         div.querySelector('.add-to-blocked').addEventListener('click', (e) => {
             const appName = e.target.closest('button').dataset.app;
             this.addAppToCategory(appName, 'blocked');
+        });
+
+        div.querySelector('.add-to-allowed').addEventListener('click', (e) => {
+            const appName = e.target.closest('button').dataset.app;
+            this.addAppToCategory(appName, 'allowed');
         });
 
         return div;
@@ -339,6 +362,7 @@ class FocusAppRenderer {
             if (result.success) {
                 this.currentSession = null;
                 this.updateSessionUI(false);
+                this.showSessionSummary(result.summary);
                 this.showNotification('Session stopped successfully!', 'success');
             } else {
                 throw new Error(result.error);
@@ -353,10 +377,6 @@ class FocusAppRenderer {
 
     handleSessionUpdate(data) {
         this.updateSessionUI(data.active);
-        if (!data.active && data.session) {
-            // Session ended, show summary
-            this.showSessionSummary(data.session);
-        }
     }
 
     updateSessionUI(sessionActive) {
@@ -428,7 +448,7 @@ class FocusAppRenderer {
         const modal = document.getElementById('sessionSummaryModal');
         const content = document.getElementById('sessionSummaryContent');
 
-        const distractionDetails = summary.distractionDetails.map(detail => 
+        const distractionDetails = (summary.distractionDetails || []).map(detail => 
             `<li>${this.escapeHtml(detail.appName)}: ${this.formatTime(detail.timeSpent)}</li>`
         ).join('');
 
@@ -499,6 +519,69 @@ class FocusAppRenderer {
             this.hideModal('addManualAppModal');
         } catch (error) {
             console.error('Error adding manual app:', error);
+        }
+    }
+
+    async handleUploadAppSubmit() {
+        const fileInput = document.getElementById('appFile');
+        const category = document.getElementById('uploadAppCategory').value;
+        const file = fileInput.files[0];
+
+        if (!file || !file.path) {
+            this.showNotification('Please choose an application file', 'warning');
+            return;
+        }
+
+        try {
+            const result = await ipcRenderer.invoke('add-app-from-file', file.path, category);
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+
+            this.addLocalApp(result.app.name, category);
+            this.updateUI();
+            fileInput.value = '';
+            this.hideModal('uploadAppModal');
+            this.showNotification(`Added ${result.app.name} to ${category} apps`, 'success');
+        } catch (error) {
+            console.error('Error uploading app:', error);
+            this.showNotification(`Failed to add file: ${error.message}`, 'error');
+        }
+    }
+
+    async handlePackageAppSubmit() {
+        const packageName = document.getElementById('packageName').value.trim();
+        const category = document.getElementById('packageCategory').value;
+
+        if (!packageName) {
+            this.showNotification('Please enter a package or app name', 'warning');
+            return;
+        }
+
+        try {
+            const result = await ipcRenderer.invoke('add-app-by-package', packageName, category);
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+
+            this.addLocalApp(result.app.name, category);
+            this.updateUI();
+            document.getElementById('packageName').value = '';
+            this.hideModal('packageManagerModal');
+            this.showNotification(`Added ${result.app.name} to ${category} apps`, 'success');
+        } catch (error) {
+            console.error('Error adding package app:', error);
+            this.showNotification(`Failed to add package: ${error.message}`, 'error');
+        }
+    }
+
+    addLocalApp(appName, category) {
+        if (category === 'selected') {
+            this.selectedApps.add(appName);
+        } else if (category === 'blocked') {
+            this.blockedApps.add(appName);
+        } else if (category === 'allowed') {
+            this.allowedApps.add(appName);
         }
     }
 

@@ -151,7 +151,7 @@ body {
 
 .session-header {
     display: flex;
-    justify-content: between;
+    justify-content: space-between;
     align-items: center;
     margin-bottom: 20px;
 }
@@ -326,7 +326,7 @@ body {
 
 .app-list-header {
     display: flex;
-    justify-content: between;
+    justify-content: space-between;
     align-items: center;
     margin-bottom: 15px;
     padding-bottom: 10px;
@@ -353,7 +353,7 @@ body {
 
 .app-item {
     display: flex;
-    justify-content: between;
+    justify-content: space-between;
     align-items: center;
     padding: 12px;
     margin: 8px 0;
@@ -473,7 +473,7 @@ body {
 
 .modal-header {
     display: flex;
-    justify-content: between;
+    justify-content: space-between;
     align-items: center;
     margin-bottom: 20px;
     padding-bottom: 15px;

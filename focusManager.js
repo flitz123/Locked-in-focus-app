@@ -18,6 +18,19 @@ class FocusManager {
         this.sessionStats = [];
         this.pendingApprovals = new Map();
         this.dataPath = path.join(app.getPath('userData'), 'focus-app-data.json');
+        this.appCatalog = new Map();
+        this.protectedProcessNames = new Set([
+            'locked-in-focus-app',
+            'electron',
+            'explorer',
+            'dwm',
+            'sihost',
+            'shellexperiencehost',
+            'searchhost',
+            'startmenuexperiencehost',
+            'taskhostw',
+            'applicationframehost'
+        ]);
         
         // Session tracking
         this.sessionStartTime = null;
@@ -28,6 +41,7 @@ class FocusManager {
         this.currentActiveApp = null;
         this.distractionApps = new Map(); // Track time spent on distraction apps
         this.openedApps = new Set(); // Track apps we've opened
+        this.blockedAttemptWindows = new Map();
     }
 
     setMainWindow(window) {
@@ -90,6 +104,7 @@ class FocusManager {
             this.lastWindowCheck = Date.now();
             this.distractionApps.clear();
             this.openedApps.clear();
+            this.blockedAttemptWindows.clear();
 
             this.currentSession = {
                 id: Date.now().toString(),
@@ -99,8 +114,12 @@ class FocusManager {
                 selectedApps: Array.from(this.selectedApps)
             };
 
+            await this.refreshAppCatalog();
+
             // Bring selected apps to foreground
             await this.bringSelectedAppsToForeground();
+
+            this.pushMainWindowToBackground();
 
             // Start monitoring
             this.startWindowMonitoring(settings.checkInterval || 2000);
@@ -173,6 +192,11 @@ class FocusManager {
             if (this.mainWindow) {
                 this.mainWindow.webContents.send('session-update', { active: false });
                 this.mainWindow.webContents.send('session-summary', sessionSummary);
+                if (this.mainWindow.isMinimized()) {
+                    this.mainWindow.restore();
+                }
+                this.mainWindow.show();
+                this.mainWindow.focus();
             }
 
             return { 
@@ -196,11 +220,18 @@ class FocusManager {
                 const timeDiff = this.lastWindowCheck ? (currentTime - this.lastWindowCheck) / 1000 : 0;
 
                 if (activeWin) {
-                    const appName = activeWin.owner.name;
+                    const identity = this.getActiveWindowIdentity(activeWin);
+                    const appName = identity.displayName;
                     this.currentActiveApp = appName;
+                    const windowKey = `${identity.processName}:${identity.title}`;
+
+                    if (this.shouldProtectProcess(identity.processName)) {
+                        this.lastWindowCheck = currentTime;
+                        return;
+                    }
 
                     // Check if this is a selected, allowed, or blocked app
-                    if (this.isAppSelected(appName) || this.isAppAllowed(appName)) {
+                    if (this.isAppSelected(identity) || this.isAppAllowed(identity)) {
                         this.focusedTime += timeDiff;
                         
                         // Send focus update to renderer
@@ -211,9 +242,9 @@ class FocusManager {
                                 duration: this.focusedTime
                             });
                         }
-                    } else if (this.isAppBlocked(appName)) {
+                    } else if (this.isAppBlocked(identity)) {
                         this.distractedTime += timeDiff;
-                        this.blockedCount++;
+                        this.trackBlockedAttempt(windowKey);
                         
                         // Track time spent on this distraction app
                         if (!this.distractionApps.has(appName)) {
@@ -223,6 +254,7 @@ class FocusManager {
                         
                         // Show approval dialog for blocked app
                         await this.handleBlockedApp(appName);
+                        await this.closeApp(identity);
                         
                         // Send distraction update to renderer
                         if (this.mainWindow) {
@@ -235,6 +267,7 @@ class FocusManager {
                     } else {
                         // Unknown app - treat as distraction
                         this.distractedTime += timeDiff;
+                        this.trackBlockedAttempt(windowKey);
                         
                         // Track time spent on this distraction app
                         if (!this.distractionApps.has(appName)) {
@@ -244,6 +277,7 @@ class FocusManager {
                         
                         // Show approval dialog for unknown app
                         await this.handleUnknownApp(appName);
+                        await this.closeApp(identity);
                         
                         // Send distraction update to renderer
                         if (this.mainWindow) {
@@ -271,10 +305,14 @@ class FocusManager {
 
     async ensureSelectedAppsRunning() {
         try {
-            // For simplicity, we'll try to open all selected apps periodically
-            // In a real implementation, you'd check which apps are actually running
+            const runningProcesses = await this.getRunningProcesses();
             for (const appName of this.selectedApps) {
-                if (!this.openedApps.has(appName)) {
+                const appRecord = this.findAppRecord(appName);
+                const isRunning = runningProcesses.some(processInfo =>
+                    this.recordMatchesProcess(appName, appRecord, processInfo)
+                );
+
+                if (!isRunning) {
                     console.log(`Opening selected app: ${appName}`);
                     await this.openApp(appName);
                     this.openedApps.add(appName);
@@ -289,12 +327,16 @@ class FocusManager {
 
     async ensureBlockedAppsClosed() {
         try {
-            const activeWin = await activeWindow();
-            if (activeWin) {
-                const currentApp = activeWin.owner.name;
-                if (this.isAppBlocked(currentApp)) {
-                    console.log(`Closing blocked app: ${currentApp}`);
-                    await this.closeApp(currentApp);
+            const runningProcesses = await this.getRunningProcesses();
+            for (const processInfo of runningProcesses) {
+                if (this.shouldProtectProcess(processInfo.processName)) {
+                    continue;
+                }
+
+                const identity = this.getProcessIdentity(processInfo);
+                if (this.isAppBlocked(identity)) {
+                    console.log(`Closing blocked app: ${identity.displayName}`);
+                    await this.closeApp(identity);
                 }
             }
         } catch (error) {
@@ -302,16 +344,114 @@ class FocusManager {
         }
     }
 
-    isAppSelected(appName) {
-        return this.selectedApps.has(appName);
+    isAppSelected(appIdentity) {
+        return this.isAppInSet(appIdentity, this.selectedApps);
     }
 
-    isAppAllowed(appName) {
-        return this.allowedApps.has(appName);
+    isAppAllowed(appIdentity) {
+        return this.isAppInSet(appIdentity, this.allowedApps);
     }
 
-    isAppBlocked(appName) {
-        return this.blockedApps.has(appName);
+    isAppBlocked(appIdentity) {
+        return this.isAppInSet(appIdentity, this.blockedApps);
+    }
+
+    isAppInSet(appIdentity, appSet) {
+        const identity = typeof appIdentity === 'string'
+            ? { displayName: appIdentity, processName: appIdentity, title: '', path: '', commandLine: '' }
+            : appIdentity;
+
+        for (const appName of appSet) {
+            const appRecord = this.findAppRecord(appName);
+            if (this.recordMatchesIdentity(appName, appRecord, identity)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    recordMatchesIdentity(appName, appRecord, identity) {
+        const aliases = this.getAppAliases(appName, appRecord);
+        const identityTokens = [
+            identity.displayName,
+            identity.processName,
+            identity.title,
+            identity.path,
+            identity.commandLine
+        ].filter(Boolean).map(value => this.normalizeAppName(value));
+
+        return aliases.some(alias => {
+            if (!alias) return false;
+            return identityTokens.some(token =>
+                token === alias ||
+                token.includes(alias) ||
+                alias.includes(token)
+            );
+        });
+    }
+
+    recordMatchesProcess(appName, appRecord, processInfo) {
+        return this.recordMatchesIdentity(appName, appRecord, this.getProcessIdentity(processInfo));
+    }
+
+    getAppAliases(appName, appRecord = null) {
+        const values = [
+            appName,
+            appRecord?.name,
+            appRecord?.processName,
+            appRecord?.executable ? path.basename(appRecord.executable, path.extname(appRecord.executable)) : '',
+            appRecord?.executable ? path.basename(appRecord.executable) : '',
+            appRecord?.appId,
+            appRecord?.appUserModelId,
+            appRecord?.packageName,
+            ...(appRecord?.aliases || [])
+        ];
+
+        return [...new Set(values.filter(Boolean).map(value => this.normalizeAppName(value)))];
+    }
+
+    normalizeAppName(value) {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/\.exe$/i, '')
+            .replace(/[^\w\s!.-]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    getActiveWindowIdentity(activeWin) {
+        const owner = activeWin?.owner || {};
+        return {
+            displayName: owner.name || activeWin?.title || 'Unknown',
+            processName: path.basename(owner.name || '', path.extname(owner.name || '')),
+            title: activeWin?.title || '',
+            path: owner.path || '',
+            pid: owner.processId,
+            commandLine: ''
+        };
+    }
+
+    getProcessIdentity(processInfo) {
+        return {
+            displayName: processInfo.name || processInfo.processName || 'Unknown',
+            processName: processInfo.processName || processInfo.name || '',
+            title: processInfo.title || '',
+            path: processInfo.path || '',
+            commandLine: processInfo.commandLine || '',
+            pid: processInfo.pid
+        };
+    }
+
+    trackBlockedAttempt(windowKey) {
+        const lastAttempt = this.blockedAttemptWindows.get(windowKey) || 0;
+        const currentTime = Date.now();
+        if (currentTime - lastAttempt < 5000) {
+            return;
+        }
+
+        this.blockedAttemptWindows.set(windowKey, currentTime);
+        this.blockedCount++;
     }
 
     async handleBlockedApp(appName) {
@@ -363,12 +503,8 @@ class FocusManager {
         this.pendingApprovals.delete(requestId);
 
         if (approved) {
-            // User approved - allow the app temporarily
-            if (request.type === 'unknown') {
-                // Add to allowed apps for this session
-                this.allowedApps.add(request.appName);
-            }
-            // For blocked apps, we still allow but track the distraction
+            // User approved - allow the app temporarily for this session.
+            this.allowedApps.add(request.appName);
             return { success: true, allowed: true };
         } else {
             // User denied - try to close the app
@@ -394,13 +530,33 @@ class FocusManager {
         }
     }
 
-    async closeApp(appName) {
+    pushMainWindowToBackground() {
+        if (!this.mainWindow) return;
+
+        try {
+            this.mainWindow.blur();
+            this.mainWindow.minimize();
+        } catch (error) {
+            console.warn('Could not push main window to background:', error.message);
+        }
+    }
+
+    async closeApp(appIdentity) {
+        const identity = typeof appIdentity === 'string'
+            ? { displayName: appIdentity, processName: appIdentity }
+            : appIdentity;
+        const appName = identity.displayName || identity.processName;
+
         console.log(`Closing app: ${appName}`);
         
         try {
             if (process.platform === 'win32') {
-                // Windows: Use taskkill to close the application
-                await execPromise(`taskkill /IM "${appName}.exe" /F`);
+                if (identity.pid) {
+                    await execPromise(`taskkill /PID ${identity.pid} /F`);
+                } else {
+                    const processName = this.normalizeProcessImageName(identity.processName || appName);
+                    await execPromise(`taskkill /IM "${processName}" /F`);
+                }
             } else if (process.platform === 'darwin') {
                 // macOS: Use osascript to quit the application
                 await execPromise(`osascript -e 'quit app "${appName}"'`);
@@ -419,21 +575,17 @@ class FocusManager {
         console.log(`Opening app: ${appName}`);
         
         try {
-            // First try to find the actual executable using the AppScanner
-            const AppScanner = require('./appScanner');
-            const scanner = new AppScanner();
-            await scanner.scanForApps();
-            const detectedApps = scanner.getDetectedApps();
-            
-            // Find the app in detected apps
-            const appInfo = detectedApps.find(app => 
-                app.name.toLowerCase().includes(appName.toLowerCase()) || 
-                appName.toLowerCase().includes(app.name.toLowerCase())
-            );
+            await this.refreshAppCatalog();
+            const appInfo = this.findAppRecord(appName);
 
-            if (appInfo && appInfo.executable) {
-                // Use the actual executable path
+            if (appInfo && appInfo.launchPath) {
+                await shell.openPath(appInfo.launchPath);
+            } else if (appInfo && appInfo.executable && appInfo.launchArgs) {
+                await execPromise(`start "" "${appInfo.executable}" ${appInfo.launchArgs}`);
+            } else if (appInfo && appInfo.executable) {
                 await shell.openPath(appInfo.executable);
+            } else if (process.platform === 'win32' && appInfo?.appUserModelId) {
+                await execPromise(`explorer.exe shell:AppsFolder\\${appInfo.appUserModelId}`);
             } else {
                 // Fallback: try common methods
                 if (process.platform === 'win32') {
@@ -511,6 +663,7 @@ class FocusManager {
             const result = await scanner.scanForApps();
             
             if (result.success) {
+                this.updateAppCatalog(result.apps);
                 return { 
                     success: true, 
                     apps: result.apps.map(app => ({ 
@@ -518,7 +671,10 @@ class FocusManager {
                         type: app.type || 'Installed Application',
                         path: app.path || '',
                         executable: app.executable || '',
-                        publisher: app.publisher || 'Unknown'
+                        publisher: app.publisher || 'Unknown',
+                        processName: app.processName || '',
+                        appId: app.appId || '',
+                        appUserModelId: app.appUserModelId || ''
                     }))
                 };
             } else {
@@ -554,6 +710,105 @@ class FocusManager {
             active: this.sessionActive,
             session: this.currentSession
         };
+    }
+
+    updateAppCatalog(apps = []) {
+        for (const appInfo of apps) {
+            if (!appInfo?.name) continue;
+            this.appCatalog.set(this.normalizeAppName(appInfo.name), appInfo);
+            for (const alias of this.getAppAliases(appInfo.name, appInfo)) {
+                this.appCatalog.set(alias, appInfo);
+            }
+        }
+    }
+
+    async refreshAppCatalog() {
+        if (this.appCatalog.size > 0) return;
+
+        try {
+            const AppScanner = require('./appScanner');
+            const scanner = new AppScanner();
+            const result = await scanner.scanForApps();
+            if (result.success) {
+                this.updateAppCatalog(result.apps);
+            }
+        } catch (error) {
+            console.warn('Could not refresh app catalog:', error.message);
+        }
+    }
+
+    findAppRecord(appName) {
+        const normalized = this.normalizeAppName(appName);
+        if (this.appCatalog.has(normalized)) {
+            return this.appCatalog.get(normalized);
+        }
+
+        for (const appInfo of this.appCatalog.values()) {
+            if (this.recordMatchesIdentity(appName, appInfo, { displayName: appName, processName: appName })) {
+                return appInfo;
+            }
+        }
+
+        return null;
+    }
+
+    async getRunningProcesses() {
+        if (process.platform === 'win32') {
+            try {
+                const script = [
+                    'Get-CimInstance Win32_Process |',
+                    'Select-Object ProcessId,Name,ExecutablePath,CommandLine |',
+                    'ConvertTo-Json -Compress'
+                ].join(' ');
+                const { stdout } = await execPromise(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${script}"`, { maxBuffer: 1024 * 1024 * 10 });
+                const parsed = JSON.parse(stdout.trim() || '[]');
+                const processes = Array.isArray(parsed) ? parsed : [parsed];
+
+                return processes.map(processInfo => ({
+                    pid: processInfo.ProcessId,
+                    name: processInfo.Name,
+                    processName: path.basename(processInfo.Name || '', path.extname(processInfo.Name || '')),
+                    path: processInfo.ExecutablePath || '',
+                    commandLine: processInfo.CommandLine || ''
+                }));
+            } catch (error) {
+                console.warn('CIM process scan failed:', error.message);
+            }
+        }
+
+        try {
+            const { stdout } = await execPromise(process.platform === 'win32' ? 'tasklist /fo csv /nh' : 'ps -A -o pid=,comm=');
+            return stdout.split('\n').map(line => {
+                if (process.platform === 'win32') {
+                    const match = line.match(/"([^"]+\.exe)","?(\d+)/i);
+                    return match ? {
+                        pid: Number(match[2]),
+                        name: match[1],
+                        processName: path.basename(match[1], '.exe')
+                    } : null;
+                }
+
+                const match = line.trim().match(/^(\d+)\s+(.+)$/);
+                return match ? {
+                    pid: Number(match[1]),
+                    name: path.basename(match[2]),
+                    processName: path.basename(match[2])
+                } : null;
+            }).filter(Boolean);
+        } catch (error) {
+            return [];
+        }
+    }
+
+    shouldProtectProcess(processName) {
+        const normalized = this.normalizeAppName(processName);
+        return this.protectedProcessNames.has(normalized) ||
+            normalized === this.normalizeAppName(path.basename(process.execPath || '', '.exe'));
+    }
+
+    normalizeProcessImageName(name) {
+        const trimmed = String(name || '').trim();
+        return trimmed.toLowerCase().endsWith('.exe') ? trimmed : `${trimmed}.exe`;
     }
 }
 

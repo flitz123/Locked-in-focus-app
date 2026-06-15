@@ -16,8 +16,11 @@ class AppScanner {
             win32: [
                 'C:\\Program Files',
                 'C:\\Program Files (x86)',
+                'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs',
                 path.join(process.env.APPDATA || '', '..', 'Local', 'Programs'),
                 path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+                path.join(process.env.USERPROFILE || '', 'Desktop'),
+                path.join(process.env.PUBLIC || '', 'Desktop'),
                 path.join(process.env.LOCALAPPDATA || '', 'Programs')
             ],
             darwin: [
@@ -43,6 +46,10 @@ class AppScanner {
 
             // Scan common installation directories
             await this.scanCommonDirectories();
+
+            // Scan OS app registries and Start Menu shortcuts
+            await this.scanWindowsInstalledApps();
+            await this.scanWindowsStartMenuShortcuts();
 
             // Scan for Microsoft Office apps
             await this.scanMicrosoftOfficeApps();
@@ -144,6 +151,10 @@ class AppScanner {
             const stats = await fs.stat(filePath);
             const filename = path.basename(filePath);
             const appName = this.cleanAppName(filename);
+            const shortcut = process.platform === 'win32' && path.extname(filename).toLowerCase() === '.lnk'
+                ? await this.resolveWindowsShortcut(filePath)
+                : null;
+            const executable = shortcut?.targetPath || (this.isExecutableFile(filename) ? filePath : null);
 
             return {
                 name: appName,
@@ -152,10 +163,39 @@ class AppScanner {
                 size: stats.size,
                 lastModified: stats.mtime,
                 publisher: await this.getPublisherInfo(filePath),
-                executable: this.isExecutableFile(filename) ? filePath : null
+                executable,
+                processName: executable ? path.basename(executable, path.extname(executable)) : appName,
+                launchPath: filePath,
+                launchArgs: shortcut?.arguments || ''
             };
         } catch (error) {
             console.warn(`Could not extract app info for ${filePath}:`, error.message);
+            return null;
+        }
+    }
+
+    async resolveWindowsShortcut(shortcutPath) {
+        try {
+            const escaped = shortcutPath.replace(/'/g, "''");
+            const command = [
+                'powershell',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                `"${[
+                    '$shell = New-Object -ComObject WScript.Shell',
+                    `$shortcut = $shell.CreateShortcut('${escaped}')`,
+                    '[PSCustomObject]@{ TargetPath = $shortcut.TargetPath; Arguments = $shortcut.Arguments } | ConvertTo-Json -Compress'
+                ].join('; ')}"`
+            ].join(' ');
+            const { stdout } = await execPromise(command);
+            const data = JSON.parse(stdout.trim() || '{}');
+            return {
+                targetPath: data.TargetPath || '',
+                arguments: data.Arguments || ''
+            };
+        } catch (error) {
             return null;
         }
     }
@@ -235,7 +275,9 @@ class AppScanner {
                     path: appPath,
                     type: 'Microsoft Office',
                     publisher: 'Microsoft Corporation',
-                    executable: appPath
+                    executable: appPath,
+                    processName: path.basename(app.exe, '.EXE'),
+                    aliases: [app.exe, path.basename(app.exe, '.EXE')]
                 });
             }
         }
@@ -274,15 +316,29 @@ class AppScanner {
         // Scan for browser profiles to find installed PWAs
         const browsers = [
             { name: 'Google Chrome', paths: [
-                path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data'),
-                path.join(process.env.APPDATA || '', 'Google', 'Chrome')
-            ]},
+                path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data')
+            ], executable: this.findBrowserExecutable('chrome.exe', [
+                path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe')
+            ]) },
             { name: 'Microsoft Edge', paths: [
                 path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'User Data')
-            ]},
+            ], executable: this.findBrowserExecutable('msedge.exe', [
+                path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+                path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+                path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+            ]) },
+            { name: 'Brave', paths: [
+                path.join(process.env.LOCALAPPDATA || '', 'BraveSoftware', 'Brave-Browser', 'User Data')
+            ], executable: this.findBrowserExecutable('brave.exe', [
+                path.join(process.env.PROGRAMFILES || '', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+                path.join(process.env['PROGRAMFILES(X86)'] || '', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+                path.join(process.env.LOCALAPPDATA || '', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe')
+            ]) },
             { name: 'Mozilla Firefox', paths: [
                 path.join(process.env.APPDATA || '', 'Mozilla', 'Firefox', 'Profiles')
-            ]}
+            ]},
         ];
 
         for (const browser of browsers) {
@@ -296,18 +352,10 @@ class AppScanner {
         
         for (const basePath of browser.paths) {
             try {
-                // Look for PWA manifests and installation directories
-                const entries = await fs.readdir(basePath, { withFileTypes: true });
-                
-                for (const entry of entries) {
-                    if (entry.isDirectory() && entry.name.includes('Application') || entry.name.includes('PWA')) {
-                        pwas.push({
-                            name: `${browser.name} - ${entry.name}`,
-                            path: path.join(basePath, entry.name),
-                            type: 'Progressive Web App',
-                            publisher: browser.name
-                        });
-                    }
+                const profiles = await fs.readdir(basePath, { withFileTypes: true });
+                for (const profile of profiles.filter(entry => entry.isDirectory())) {
+                    const profilePath = path.join(basePath, profile.name);
+                    pwas.push(...await this.readChromiumWebApps(browser, profilePath));
                 }
             } catch (error) {
                 // Skip if we can't read the directory
@@ -316,6 +364,140 @@ class AppScanner {
         }
 
         return pwas;
+    }
+
+    async readChromiumWebApps(browser, profilePath) {
+        const pwas = [];
+        const manifestRoot = path.join(profilePath, 'Web Applications', 'Manifest Resources');
+
+        try {
+            const appIds = await fs.readdir(manifestRoot, { withFileTypes: true });
+            for (const appIdEntry of appIds.filter(entry => entry.isDirectory())) {
+                const appId = appIdEntry.name;
+                const manifestPath = path.join(manifestRoot, appId, 'manifest.json');
+                let manifest = {};
+
+                try {
+                    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+                } catch (error) {
+                    // Some Chromium apps only have shortcut metadata.
+                }
+
+                const name = manifest.name || manifest.short_name || `${browser.name} Web App ${appId}`;
+                pwas.push({
+                    name,
+                    path: manifestPath,
+                    type: 'Progressive Web App',
+                    publisher: browser.name,
+                    executable: browser.executable || null,
+                    processName: browser.executable ? path.basename(browser.executable, '.exe') : browser.name,
+                    appId,
+                    launchArgs: `--app-id=${appId}`,
+                    aliases: [appId, `${browser.name} - ${name}`]
+                });
+            }
+        } catch (error) {
+            // Browser/profile has no installed Chromium web apps.
+        }
+
+        return pwas;
+    }
+
+    async scanWindowsInstalledApps() {
+        if (process.platform !== 'win32') return;
+
+        try {
+            const script = [
+                '$paths = @(',
+                "'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+                "'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+                "'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+                ')',
+                '$apps = foreach ($path in $paths) {',
+                '  Get-ItemProperty $path -ErrorAction SilentlyContinue | Where-Object DisplayName | ForEach-Object {',
+                '    [PSCustomObject]@{',
+                '      Name = $_.DisplayName;',
+                '      Publisher = $_.Publisher;',
+                '      InstallLocation = $_.InstallLocation;',
+                '      DisplayIcon = $_.DisplayIcon',
+                '    }',
+                '  }',
+                '}',
+                '$apps | ConvertTo-Json -Compress'
+            ].join(' ');
+            const { stdout } = await execPromise(`powershell -NoProfile -ExecutionPolicy Bypass -Command "${script}"`, { maxBuffer: 1024 * 1024 * 5 });
+            const parsed = JSON.parse(stdout.trim() || '[]');
+            const apps = Array.isArray(parsed) ? parsed : [parsed];
+
+            for (const item of apps) {
+                const iconPath = this.cleanExecutablePath(item.DisplayIcon || '');
+                const installPath = item.InstallLocation || iconPath || 'Windows Registry';
+                this.detectedApps.push({
+                    name: item.Name,
+                    path: installPath,
+                    type: 'Installed Application',
+                    publisher: item.Publisher || 'Unknown',
+                    executable: iconPath || null,
+                    processName: iconPath ? path.basename(iconPath, path.extname(iconPath)) : item.Name
+                });
+            }
+        } catch (error) {
+            console.warn('Windows installed app scan failed:', error.message);
+        }
+
+        try {
+            const { stdout } = await execPromise('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress"', { maxBuffer: 1024 * 1024 * 5 });
+            const parsed = JSON.parse(stdout.trim() || '[]');
+            const apps = Array.isArray(parsed) ? parsed : [parsed];
+
+            for (const item of apps) {
+                if (!item.Name) continue;
+                this.detectedApps.push({
+                    name: item.Name,
+                    path: item.AppID || 'Start Menu App',
+                    type: item.AppID && item.AppID.includes('!') ? 'Microsoft Store / Enterprise App' : 'Start Menu Application',
+                    publisher: 'Windows',
+                    appUserModelId: item.AppID,
+                    aliases: [item.AppID].filter(Boolean)
+                });
+            }
+        } catch (error) {
+            console.warn('Windows StartApps scan failed:', error.message);
+        }
+    }
+
+    findBrowserExecutable(fallback, candidates) {
+        const fsSync = require('fs');
+        return candidates.find(candidate => {
+            try {
+                return candidate && fsSync.existsSync(candidate);
+            } catch (error) {
+                return false;
+            }
+        }) || fallback;
+    }
+
+    async scanWindowsStartMenuShortcuts() {
+        if (process.platform !== 'win32') return;
+
+        const shortcutRoots = [
+            'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs',
+            path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs')
+        ];
+
+        for (const root of shortcutRoots) {
+            try {
+                await this.scanDirectoryRecursive(root, 0);
+            } catch (error) {
+                // Ignore inaccessible shortcut roots.
+            }
+        }
+    }
+
+    cleanExecutablePath(value) {
+        if (!value) return '';
+        const withoutArgs = value.replace(/^"([^"]+)".*$/, '$1').split(',')[0].trim();
+        return path.extname(withoutArgs).toLowerCase() === '.exe' ? withoutArgs : '';
     }
 
     async scanRunningProcesses() {
@@ -339,7 +521,8 @@ class AppScanner {
                         name: processName,
                         path: 'Running Process',
                         type: 'Running Application',
-                        publisher: 'System'
+                        publisher: 'System',
+                        processName
                     });
                 }
             }
@@ -391,7 +574,8 @@ class AppScanner {
                             name: cleanName,
                             path: 'Winget Package',
                             type: 'Windows Package',
-                            publisher: publisher.trim()
+                            publisher: publisher.trim(),
+                            packageName: cleanName
                         });
                     }
                 }

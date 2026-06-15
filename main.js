@@ -7,6 +7,7 @@ const AppScanner = require('./appScanner');
 let mainWindow;
 let focusManager;
 let appScanner;
+let isQuitting = false;
 
 function createWindow() {
     // Create the browser window
@@ -39,7 +40,19 @@ function createWindow() {
         mainWindow.focus();
     });
 
-    // Emitted when the window is closed
+    mainWindow.on('close', async (event) => {
+        if (isQuitting || !focusManager || !focusManager.sessionActive) {
+            return;
+        }
+
+        event.preventDefault();
+        const result = await focusManager.stopSession();
+        if (result.success) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+
     mainWindow.on('closed', () => {
         mainWindow = null;
     });
@@ -72,16 +85,22 @@ function setupIpcHandlers() {
 
     // App scanning and detection
     ipcMain.handle('scan-apps', async (event) => {
-        return await appScanner.scanForApps();
+        const result = await appScanner.scanForApps();
+        if (result.success) {
+            focusManager.updateAppCatalog(result.apps);
+        }
+        return result;
     });
 
     ipcMain.handle('search-apps', async (event, query) => {
-        return appScanner.searchApps(query);
+        return { success: true, apps: appScanner.searchApps(query) };
     });
 
     // App management
-    ipcMain.handle('add-app-manually', async (event, appName, category) => {
-        return await focusManager.addAppManually(appName, 'User Added', category);
+    ipcMain.handle('add-app-manually', async (event, appName, appTypeOrCategory = 'selected', maybeCategory) => {
+        const category = maybeCategory || appTypeOrCategory;
+        const appType = maybeCategory ? appTypeOrCategory : 'User Added';
+        return await focusManager.addAppManually(appName, appType, category);
     });
 
     ipcMain.handle('remove-app', async (event, appName) => {
@@ -98,11 +117,21 @@ function setupIpcHandlers() {
 
     // File operations
     ipcMain.handle('add-app-from-file', async (event, filePath, category) => {
-        return await appScanner.addAppFromFile(filePath, category);
+        const result = await appScanner.addAppFromFile(filePath, category);
+        if (result.success) {
+            focusManager.updateAppCatalog([result.app]);
+            await focusManager.addAppManually(result.app.name, result.app.type, category);
+        }
+        return result;
     });
 
     ipcMain.handle('add-app-by-package', async (event, packageName, category) => {
-        return await appScanner.addAppByPackageName(packageName, category);
+        const result = await appScanner.addAppByPackageName(packageName, category);
+        if (result.success) {
+            focusManager.updateAppCatalog([result.app]);
+            await focusManager.addAppManually(result.app.name, result.app.type, category);
+        }
+        return result;
     });
 
     // App approval handling
@@ -127,6 +156,10 @@ function setupIpcHandlers() {
     ipcMain.handle('show-open-dialog', async (event, options) => {
         const result = await dialog.showOpenDialog(mainWindow, options);
         return result;
+    });
+
+    ipcMain.handle('show-file-dialog', async (event, options) => {
+        return await dialog.showOpenDialog(mainWindow, options);
     });
 
     // Open external
@@ -177,6 +210,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+    isQuitting = true;
     // Stop any active session before quitting
     if (focusManager && focusManager.sessionActive) {
         await focusManager.stopSession();
