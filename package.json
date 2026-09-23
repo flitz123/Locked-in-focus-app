@@ -22,7 +22,6 @@
         "electron-builder": "^24.0.0"
     },
     "dependencies": {
-        "active-win": "^7.6.0",
         "glob": "^10.0.0"
     },
     "build": {

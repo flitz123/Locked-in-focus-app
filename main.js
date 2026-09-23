@@ -3,14 +3,11 @@ const path = require('path');
 const FocusManager = require('./focusManager');
 const AppScanner = require('./appScanner');
 
-// Keep a global reference of the window object
 let mainWindow;
 let focusManager;
 let appScanner;
-let isQuitting = false;
 
 function createWindow() {
-    // Create the browser window
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
@@ -23,34 +20,17 @@ function createWindow() {
         },
         icon: path.join(__dirname, 'assets', 'icon.png'),
         title: 'Locked-In Focus App',
-        show: false // Don't show until ready-to-show
+        show: false
     });
 
-    // Load the app
     mainWindow.loadFile('index.html');
 
-    // Show window when ready to prevent visual flash
     mainWindow.once('ready-to-show', () => {
         mainWindow.show();
-        
-        // Focus the window
         if (process.platform === 'darwin') {
             app.dock.show();
         }
         mainWindow.focus();
-    });
-
-    mainWindow.on('close', async (event) => {
-        if (isQuitting || !focusManager || !focusManager.sessionActive) {
-            return;
-        }
-
-        event.preventDefault();
-        const result = await focusManager.stopSession();
-        if (result.success) {
-            mainWindow.show();
-            mainWindow.focus();
-        }
     });
 
     mainWindow.on('closed', () => {
@@ -62,8 +42,16 @@ function createWindow() {
     appScanner = new AppScanner();
     focusManager.setMainWindow(mainWindow);
 
-    // Load initial data
-    focusManager.loadData();
+    // Load initial data and scan apps automatically
+    focusManager.loadData().then(() => {
+        console.log('Focus manager data loaded');
+        // Auto-scan apps on startup
+        focusManager.getInstalledApps().then(result => {
+            if (result.success) {
+                console.log(`Auto-scanned ${result.apps.length} applications on startup`);
+            }
+        });
+    });
 
     // Setup IPC handlers
     setupIpcHandlers();
@@ -85,22 +73,34 @@ function setupIpcHandlers() {
 
     // App scanning and detection
     ipcMain.handle('scan-apps', async (event) => {
-        const result = await appScanner.scanForApps();
-        if (result.success) {
-            focusManager.updateAppCatalog(result.apps);
+        try {
+            const result = await focusManager.getInstalledApps();
+            return result;
+        } catch (error) {
+            console.error('Error scanning apps:', error);
+            return { success: false, error: error.message, apps: [] };
         }
-        return result;
     });
 
     ipcMain.handle('search-apps', async (event, query) => {
-        return { success: true, apps: appScanner.searchApps(query) };
+        try {
+            const result = await focusManager.getInstalledApps();
+            if (result.success) {
+                const filteredApps = result.apps.filter(app => 
+                    app.name.toLowerCase().includes(query.toLowerCase()) ||
+                    (app.type && app.type.toLowerCase().includes(query.toLowerCase()))
+                );
+                return filteredApps;
+            }
+            return [];
+        } catch (error) {
+            return [];
+        }
     });
 
     // App management
-    ipcMain.handle('add-app-manually', async (event, appName, appTypeOrCategory = 'selected', maybeCategory) => {
-        const category = maybeCategory || appTypeOrCategory;
-        const appType = maybeCategory ? appTypeOrCategory : 'User Added';
-        return await focusManager.addAppManually(appName, appType, category);
+    ipcMain.handle('add-app-manually', async (event, appName, category) => {
+        return await focusManager.addAppManually(appName, 'User Added', category);
     });
 
     ipcMain.handle('remove-app', async (event, appName) => {
@@ -117,21 +117,11 @@ function setupIpcHandlers() {
 
     // File operations
     ipcMain.handle('add-app-from-file', async (event, filePath, category) => {
-        const result = await appScanner.addAppFromFile(filePath, category);
-        if (result.success) {
-            focusManager.updateAppCatalog([result.app]);
-            await focusManager.addAppManually(result.app.name, result.app.type, category);
-        }
-        return result;
+        return await appScanner.addAppFromFile(filePath, category);
     });
 
     ipcMain.handle('add-app-by-package', async (event, packageName, category) => {
-        const result = await appScanner.addAppByPackageName(packageName, category);
-        if (result.success) {
-            focusManager.updateAppCatalog([result.app]);
-            await focusManager.addAppManually(result.app.name, result.app.type, category);
-        }
-        return result;
+        return await appScanner.addAppByPackageName(packageName, category);
     });
 
     // App approval handling
@@ -156,10 +146,6 @@ function setupIpcHandlers() {
     ipcMain.handle('show-open-dialog', async (event, options) => {
         const result = await dialog.showOpenDialog(mainWindow, options);
         return result;
-    });
-
-    ipcMain.handle('show-file-dialog', async (event, options) => {
-        return await dialog.showOpenDialog(mainWindow, options);
     });
 
     // Open external
@@ -188,6 +174,16 @@ function setupIpcHandlers() {
         ];
         return officeApps;
     });
+
+    // Package manager - browse system for apps
+    ipcMain.handle('browse-system-apps', async (event) => {
+        try {
+            const result = await focusManager.getInstalledApps();
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message, apps: [] };
+        }
+    });
 }
 
 // App event handlers
@@ -195,7 +191,6 @@ app.whenReady().then(() => {
     createWindow();
 
     app.on('activate', () => {
-        // On macOS, re-create window when dock icon is clicked
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
         }
@@ -203,15 +198,12 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-    // On macOS, keep app running even when all windows are closed
     if (process.platform !== 'darwin') {
         app.quit();
     }
 });
 
 app.on('before-quit', async () => {
-    isQuitting = true;
-    // Stop any active session before quitting
     if (focusManager && focusManager.sessionActive) {
         await focusManager.stopSession();
     }
@@ -228,5 +220,4 @@ app.on('web-contents-created', (event, contents) => {
     });
 });
 
-// Export for testing
 module.exports = { focusManager, appScanner };

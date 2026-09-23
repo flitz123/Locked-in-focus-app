@@ -3,69 +3,55 @@ const { ipcRenderer } = require('electron');
 class FocusAppRenderer {
     constructor() {
         this.currentSession = null;
+        this.sessionActive = false;
         this.selectedApps = new Set();
         this.allowedApps = new Set();
         this.blockedApps = new Set();
         this.detectedApps = [];
         this.sessionStats = [];
-        
+        this.currentFocusData = {
+            currentApp: 'None',
+            status: 'Inactive',
+            focusedTime: 0,
+            distractedTime: 0,
+            blockedCount: 0
+        };
+
         this.initializeEventListeners();
         this.loadInitialData();
+        this.updateUI();
     }
 
     initializeEventListeners() {
         // Navigation
         document.querySelectorAll('.nav-item').forEach(item => {
             item.addEventListener('click', (e) => {
-                const targetId = e.currentTarget.id.replace('nav-', '') + 'Section';
-                this.showSection(targetId);
-                
-                // Update active nav
-                document.querySelectorAll('.nav-item').forEach(nav => {
-                    nav.classList.remove('active');
-                });
-                e.currentTarget.classList.add('active');
+                this.handleNavigation(e.target.closest('.nav-item').id);
             });
         });
 
-        // Session controls
+        // Session Controls
         document.getElementById('startSessionBtn').addEventListener('click', () => this.startSession());
         document.getElementById('stopSessionBtn').addEventListener('click', () => this.stopSession());
 
-        // App scanning
+        // App Management
         document.getElementById('scanAppsBtn').addEventListener('click', () => this.scanApps());
-        document.getElementById('searchApps').addEventListener('input', (e) => this.searchApps(e.target.value));
-
-        // App management
-        document.getElementById('addManualAppBtn').addEventListener('click', () => this.showAddManualAppModal());
-        document.getElementById('uploadAppBtn').addEventListener('click', () => this.showUploadAppModal());
+        document.getElementById('addManualAppBtn').addEventListener('click', () => this.showManualAppModal());
+        document.getElementById('uploadAppBtn').addEventListener('click', () => this.showFileUploadModal());
         document.getElementById('packageManagerBtn').addEventListener('click', () => this.showPackageManagerModal());
 
-        // Modal controls
-        document.getElementById('closeManualModal').addEventListener('click', () => this.hideModal('addManualAppModal'));
-        document.getElementById('closeManualModal2').addEventListener('click', () => this.hideModal('addManualAppModal'));
-        document.getElementById('closeUploadModal').addEventListener('click', () => this.hideModal('uploadAppModal'));
-        document.getElementById('closeUploadModal2').addEventListener('click', () => this.hideModal('uploadAppModal'));
-        document.getElementById('closePackageModal').addEventListener('click', () => this.hideModal('packageManagerModal'));
-        document.getElementById('closePackageModal2').addEventListener('click', () => this.hideModal('packageManagerModal'));
-        document.getElementById('closeApprovalModal').addEventListener('click', () => this.hideModal('approvalModal'));
-        document.getElementById('closeSummaryModal').addEventListener('click', () => this.hideModal('sessionSummaryModal'));
-        document.getElementById('closeSummaryModal2').addEventListener('click', () => this.hideModal('sessionSummaryModal'));
-
-        // Form submissions
-        document.getElementById('manualAppForm').addEventListener('submit', (e) => this.handleManualAppSubmit(e));
-        document.getElementById('uploadAppConfirm').addEventListener('click', () => this.handleUploadAppSubmit());
-        document.getElementById('packageInstallBtn').addEventListener('click', () => this.handlePackageAppSubmit());
-        
-        // App approval
-        document.getElementById('approveAppBtn').addEventListener('click', () => this.handleAppApproval(true));
-        document.getElementById('denyAppBtn').addEventListener('click', () => this.handleAppApproval(false));
-
-        // Data management
+        // Settings
+        document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettings());
         document.getElementById('clearDataBtn').addEventListener('click', () => this.clearAllData());
         document.getElementById('exportDataBtn').addEventListener('click', () => this.exportData());
 
-        // IPC listeners
+        // Search
+        document.getElementById('searchApps').addEventListener('input', (e) => this.searchApps(e.target.value));
+
+        // Modal Controls
+        this.initializeModalControls();
+        
+        // IPC Event Listeners
         this.setupIpcListeners();
     }
 
@@ -82,7 +68,7 @@ class FocusAppRenderer {
 
         // App approval requests
         ipcRenderer.on('app-approval-request', (event, data) => {
-            this.showApprovalDialog(data);
+            this.showAppApprovalModal(data);
         });
 
         // Session summary
@@ -91,184 +77,241 @@ class FocusAppRenderer {
         });
     }
 
+    initializeModalControls() {
+        // Close modals when clicking X
+        document.querySelectorAll('.modal .close').forEach(closeBtn => {
+            closeBtn.addEventListener('click', (e) => {
+                e.target.closest('.modal').style.display = 'none';
+            });
+        });
+
+        // Close modals when clicking outside
+        window.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.style.display = 'none';
+            }
+        });
+
+        // Manual App Modal
+        document.getElementById('saveManualAppBtn').addEventListener('click', () => this.addManualApp());
+        document.getElementById('cancelManualAppBtn').addEventListener('click', () => {
+            document.getElementById('manualAppModal').style.display = 'none';
+        });
+
+        // App Approval Modal
+        document.getElementById('approveAppBtn').addEventListener('click', () => this.handleAppApproval(true));
+        document.getElementById('denyAppBtn').addEventListener('click', () => this.handleAppApproval(false));
+
+        // Package Manager
+        document.getElementById('browseSystemBtn').addEventListener('click', () => this.browseSystemApps());
+
+        // File Upload
+        document.getElementById('fileInput').addEventListener('change', (e) => this.handleFileSelection(e));
+        document.getElementById('processFilesBtn').addEventListener('click', () => this.processUploadedFiles());
+        document.getElementById('cancelUploadBtn').addEventListener('click', () => {
+            document.getElementById('fileUploadModal').style.display = 'none';
+        });
+
+        // Upload area click
+        document.getElementById('uploadArea').addEventListener('click', () => {
+            document.getElementById('fileInput').click();
+        });
+    }
+
     async loadInitialData() {
         try {
-            await ipcRenderer.invoke('load-data');
+            // Load app lists
             const appLists = await ipcRenderer.invoke('get-app-lists');
             this.selectedApps = new Set(appLists.selectedApps);
             this.allowedApps = new Set(appLists.allowedApps);
             this.blockedApps = new Set(appLists.blockedApps);
-            
+
+            // Load session stats
             this.sessionStats = await ipcRenderer.invoke('get-session-stats');
-            
+
+            // Get session status
+            const sessionStatus = await ipcRenderer.invoke('get-session-status');
+            this.sessionActive = sessionStatus.active;
+            this.currentSession = sessionStatus.session;
+
             this.updateUI();
-            this.showNotification('App loaded successfully!', 'success');
         } catch (error) {
             console.error('Error loading initial data:', error);
         }
     }
 
-    updateUI() {
-        this.updateAppLists();
-        this.updateStats();
-        this.updateSessionUI();
-    }
-
-    updateAppLists() {
-        this.updateAppList('selectedAppsList', Array.from(this.selectedApps), 'selected');
-        this.updateAppList('selectedAppsListManage', Array.from(this.selectedApps), 'selected');
-        this.updateAppList('blockedAppsList', Array.from(this.blockedApps), 'blocked');
-        this.updateAppList('blockedAppsListManage', Array.from(this.blockedApps), 'blocked');
-        this.updateAppList('allowedAppsList', Array.from(this.allowedApps), 'allowed');
-    }
-
-    updateAppList(containerId, apps, category) {
-        const container = document.getElementById(containerId);
-        container.innerHTML = '';
-
-        if (apps.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-${this.getCategoryIcon(category)}"></i>
-                    <p>No ${category} applications</p>
-                </div>
-            `;
-            return;
-        }
-
-        apps.forEach(appName => {
-            const div = document.createElement('div');
-            div.className = 'app-item';
-            div.innerHTML = `
-                <div class="app-info">
-                    <div class="app-name">${this.escapeHtml(appName)}</div>
-                </div>
-                <div class="app-actions">
-                    <button class="btn btn-sm btn-danger remove-app" data-app="${this.escapeHtml(appName)}" data-category="${category}">
-                        <i class="fas fa-trash"></i> Remove
-                    </button>
-                </div>
-            `;
-
-            div.querySelector('.remove-app').addEventListener('click', (e) => {
-                const appName = e.target.closest('button').dataset.app;
-                const category = e.target.closest('button').dataset.category;
-                this.removeAppFromCategory(appName, category);
-            });
-
-            container.appendChild(div);
+    handleNavigation(navId) {
+        // Update active nav item
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.classList.remove('active');
         });
-    }
+        document.getElementById(navId).classList.add('active');
 
-    getCategoryIcon(category) {
-        switch(category) {
-            case 'selected': return 'check-circle';
-            case 'blocked': return 'ban';
-            case 'allowed': return 'check';
-            default: return 'app';
+        // Show corresponding section
+        document.querySelectorAll('.content-section').forEach(section => {
+            section.classList.remove('active');
+        });
+
+        switch (navId) {
+            case 'nav-dashboard':
+                document.getElementById('dashboardSection').classList.add('active');
+                break;
+            case 'nav-apps':
+                document.getElementById('appsSection').classList.add('active');
+                break;
+            case 'nav-detection':
+                document.getElementById('detectionSection').classList.add('active');
+                break;
+            case 'nav-sessions':
+                document.getElementById('sessionsSection').classList.add('active');
+                this.loadSessionHistory();
+                break;
+            case 'nav-settings':
+                document.getElementById('settingsSection').classList.add('active');
+                break;
         }
     }
 
-    updateStats() {
-        document.getElementById('selectedAppsCount').textContent = this.selectedApps.size;
-        document.getElementById('selectedAppsCountHeader').textContent = this.selectedApps.size;
-        document.getElementById('selectedAppsCountManage').textContent = this.selectedApps.size;
-        document.getElementById('blockedAppsCount').textContent = this.blockedApps.size;
-        document.getElementById('blockedAppsCountHeader').textContent = this.blockedApps.size;
-        document.getElementById('blockedAppsCountManage').textContent = this.blockedApps.size;
-        document.getElementById('allowedAppsCount').textContent = this.allowedApps.size;
-        document.getElementById('totalSessions').textContent = this.sessionStats.length;
-        
-        const avgProductivity = this.sessionStats.length > 0 
-            ? Math.round(this.sessionStats.reduce((sum, stat) => sum + stat.productivity, 0) / this.sessionStats.length)
-            : 0;
-        document.getElementById('productivityScore').textContent = `${avgProductivity}%`;
+    async startSession() {
+        const sessionName = document.getElementById('sessionName').value || 'My Focus Session';
+        const checkInterval = parseInt(document.getElementById('checkInterval').value) || 2000;
+
+        const settings = {
+            name: sessionName,
+            checkInterval: checkInterval
+        };
+
+        try {
+            const result = await ipcRenderer.invoke('start-session', settings);
+            
+            if (result.success) {
+                this.showNotification('Session started successfully!', 'success');
+                this.sessionActive = true;
+                this.currentSession = result.session;
+            } else {
+                this.showNotification(`Failed to start session: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error starting session: ${error.message}`, 'error');
+        }
+
+        this.updateUI();
+    }
+
+    async stopSession() {
+        try {
+            const result = await ipcRenderer.invoke('stop-session');
+            
+            if (result.success) {
+                this.showNotification('Session stopped successfully!', 'success');
+                this.sessionActive = false;
+                this.currentSession = null;
+            } else {
+                this.showNotification(`Failed to stop session: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error stopping session: ${error.message}`, 'error');
+        }
+
+        this.updateUI();
+    }
+
+    handleSessionUpdate(data) {
+        this.sessionActive = data.active;
+        this.currentSession = data.session;
+        this.updateUI();
+    }
+
+    updateFocusDisplay(data) {
+        this.currentFocusData = {
+            currentApp: data.app || 'None',
+            status: data.status || 'Inactive',
+            focusedTime: data.focusedTime || 0,
+            distractedTime: data.distractedTime || 0,
+            blockedCount: data.blockedAttempts || 0
+        };
+
+        document.getElementById('currentApp').textContent = this.currentFocusData.currentApp;
+        document.getElementById('focusStatus').textContent = this.formatStatus(this.currentFocusData.status);
+        document.getElementById('focusedTime').textContent = this.formatTime(this.currentFocusData.focusedTime);
+        document.getElementById('distractedTime').textContent = this.formatTime(this.currentFocusData.distractedTime);
+        document.getElementById('blockedCount').textContent = this.currentFocusData.blockedCount;
     }
 
     async scanApps() {
         try {
-            this.showLoading('scanAppsBtn', 'Scanning...');
+            this.showNotification('Scanning for applications...', 'info');
             
             const result = await ipcRenderer.invoke('scan-apps');
             
             if (result.success) {
                 this.detectedApps = result.apps;
-                this.displayDetectedApps(this.detectedApps);
-                document.getElementById('detectedAppsCount').textContent = result.count;
-                this.showNotification(`Found ${result.count} applications!`, 'success');
+                this.showNotification(`Found ${result.apps.length} applications`, 'success');
+                this.displayDetectedApps();
             } else {
-                throw new Error(result.error);
+                this.showNotification(`Scan failed: ${result.error}`, 'error');
             }
         } catch (error) {
-            console.error('Error scanning apps:', error);
-            this.showNotification(`Scan failed: ${error.message}`, 'error');
-        } finally {
-            this.hideLoading('scanAppsBtn');
+            this.showNotification(`Error scanning apps: ${error.message}`, 'error');
         }
     }
 
-    displayDetectedApps(apps) {
-        const container = document.getElementById('detectedAppsList');
-        container.innerHTML = '';
-        document.getElementById('detectedAppsCount').textContent = apps.length;
-
-        if (apps.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <i class="fas fa-search"></i>
-                    <p>No applications found</p>
-                </div>
-            `;
+    async searchApps(query) {
+        if (!query.trim()) {
+            this.displayDetectedApps();
             return;
         }
 
-        apps.forEach(app => {
-            const appElement = this.createDetectedAppElement(app);
-            container.appendChild(appElement);
-        });
+        try {
+            const filteredApps = await ipcRenderer.invoke('search-apps', query);
+            this.displayApps(filteredApps, 'detectedAppsList');
+        } catch (error) {
+            console.error('Error searching apps:', error);
+        }
     }
 
-    createDetectedAppElement(app) {
-        const div = document.createElement('div');
-        div.className = 'app-item';
-        div.innerHTML = `
-            <div class="app-info">
-                <div class="app-name">${this.escapeHtml(app.name)}</div>
-                <div class="app-details">
-                    <span class="app-type">${this.escapeHtml(app.type)}</span>
-                    <span class="app-publisher">${this.escapeHtml(app.publisher || 'Unknown')}</span>
+    displayDetectedApps() {
+        this.displayApps(this.detectedApps, 'detectedAppsList');
+        document.getElementById('detectedAppsCount').textContent = `${this.detectedApps.length} apps`;
+    }
+
+    displayApps(apps, containerId) {
+        const container = document.getElementById(containerId);
+        
+        if (!apps || apps.length === 0) {
+            container.innerHTML = '<div class="no-apps">No applications found</div>';
+            return;
+        }
+
+        container.innerHTML = apps.map(app => `
+            <div class="app-item">
+                <div class="app-info">
+                    <div class="app-name">${app.name}</div>
+                    <div class="app-type">${app.type || 'Unknown Type'}</div>
+                    ${app.publisher ? `<div class="app-publisher">${app.publisher}</div>` : ''}
                 </div>
-                <div class="app-path">${this.escapeHtml(app.path)}</div>
+                <div class="app-actions">
+                    <button class="btn btn-sm btn-success add-app-btn" data-app="${app.name}" data-category="selected">
+                        <i class="fas fa-plus"></i> Select
+                    </button>
+                    <button class="btn btn-sm btn-info add-app-btn" data-app="${app.name}" data-category="allowed">
+                        <i class="fas fa-check"></i> Allow
+                    </button>
+                    <button class="btn btn-sm btn-danger add-app-btn" data-app="${app.name}" data-category="blocked">
+                        <i class="fas fa-ban"></i> Block
+                    </button>
+                </div>
             </div>
-            <div class="app-actions">
-                <button class="btn btn-sm btn-primary add-to-selected" data-app="${this.escapeHtml(app.name)}">
-                    <i class="fas fa-check-circle"></i> Select
-                </button>
-                <button class="btn btn-sm btn-success add-to-allowed" data-app="${this.escapeHtml(app.name)}">
-                    <i class="fas fa-check"></i> Allow
-                </button>
-                <button class="btn btn-sm btn-warning add-to-blocked" data-app="${this.escapeHtml(app.name)}">
-                    <i class="fas fa-ban"></i> Block
-                </button>
-            </div>
-        `;
+        `).join('');
 
-        div.querySelector('.add-to-selected').addEventListener('click', (e) => {
-            const appName = e.target.closest('button').dataset.app;
-            this.addAppToCategory(appName, 'selected');
+        // Add event listeners to action buttons
+        container.querySelectorAll('.add-app-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const appName = e.target.closest('.add-app-btn').dataset.app;
+                const category = e.target.closest('.add-app-btn').dataset.category;
+                this.addAppToCategory(appName, category);
+            });
         });
-
-        div.querySelector('.add-to-blocked').addEventListener('click', (e) => {
-            const appName = e.target.closest('button').dataset.app;
-            this.addAppToCategory(appName, 'blocked');
-        });
-
-        div.querySelector('.add-to-allowed').addEventListener('click', (e) => {
-            const appName = e.target.closest('button').dataset.app;
-            this.addAppToCategory(appName, 'allowed');
-        });
-
-        return div;
     }
 
     async addAppToCategory(appName, category) {
@@ -278,436 +321,485 @@ class FocusAppRenderer {
             if (result.success) {
                 if (category === 'selected') {
                     this.selectedApps.add(appName);
-                } else if (category === 'blocked') {
-                    this.blockedApps.add(appName);
                 } else if (category === 'allowed') {
                     this.allowedApps.add(appName);
-                }
-                
-                this.updateUI();
-                this.showNotification(`Added ${appName} to ${category} apps`, 'success');
-            } else {
-                throw new Error(result.error);
-            }
-        } catch (error) {
-            console.error('Error adding app:', error);
-            this.showNotification(`Failed to add app: ${error.message}`, 'error');
-        }
-    }
-
-    async removeAppFromCategory(appName, category) {
-        try {
-            const result = await ipcRenderer.invoke('remove-app', appName);
-            
-            if (result.success) {
-                if (category === 'selected') {
-                    this.selectedApps.delete(appName);
                 } else if (category === 'blocked') {
-                    this.blockedApps.delete(appName);
-                } else if (category === 'allowed') {
-                    this.allowedApps.delete(appName);
+                    this.blockedApps.add(appName);
                 }
-                
+
+                this.showNotification(`Added ${appName} to ${category} apps`, 'success');
                 this.updateUI();
-                this.showNotification(`Removed ${appName} from ${category} apps`, 'success');
+                await ipcRenderer.invoke('save-data');
             } else {
-                throw new Error(result.error);
+                this.showNotification(`Failed to add app: ${result.error}`, 'error');
             }
         } catch (error) {
-            console.error('Error removing app:', error);
-            this.showNotification(`Failed to remove app: ${error.message}`, 'error');
+            this.showNotification(`Error adding app: ${error.message}`, 'error');
         }
     }
 
-    async startSession() {
-        if (this.selectedApps.size === 0) {
-            this.showNotification('Please select at least one application before starting a session', 'warning');
+    showManualAppModal() {
+        document.getElementById('manualAppName').value = '';
+        document.getElementById('manualAppCategory').value = 'selected';
+        document.getElementById('manualAppModal').style.display = 'block';
+    }
+
+    async addManualApp() {
+        const appName = document.getElementById('manualAppName').value.trim();
+        const category = document.getElementById('manualAppCategory').value;
+
+        if (!appName) {
+            this.showNotification('Please enter an application name', 'error');
             return;
         }
 
         try {
-            const sessionName = document.getElementById('sessionName').value || `Session ${new Date().toLocaleString()}`;
-            const checkInterval = 2000; // Default interval
-
-            const settings = {
-                name: sessionName,
-                checkInterval: checkInterval
-            };
-
-            this.showLoading('startSessionBtn', 'Starting...');
-            
-            const result = await ipcRenderer.invoke('start-session', settings);
+            const result = await ipcRenderer.invoke('add-app-manually', appName, category);
             
             if (result.success) {
-                this.currentSession = result.sessionId;
-                this.updateSessionUI(true);
-                this.showNotification('Session started successfully!', 'success');
+                if (category === 'selected') {
+                    this.selectedApps.add(appName);
+                } else if (category === 'allowed') {
+                    this.allowedApps.add(appName);
+                } else if (category === 'blocked') {
+                    this.blockedApps.add(appName);
+                }
+
+                this.showNotification(`Added ${appName} to ${category} apps`, 'success');
+                document.getElementById('manualAppModal').style.display = 'none';
+                this.updateUI();
+                await ipcRenderer.invoke('save-data');
             } else {
-                throw new Error(result.error);
+                this.showNotification(`Failed to add app: ${result.error}`, 'error');
             }
         } catch (error) {
-            console.error('Error starting session:', error);
-            this.showNotification(`Failed to start session: ${error.message}`, 'error');
-        } finally {
-            this.hideLoading('startSessionBtn');
+            this.showNotification(`Error adding app: ${error.message}`, 'error');
         }
     }
 
-    async stopSession() {
+    showFileUploadModal() {
+        document.getElementById('uploadedFiles').innerHTML = '';
+        document.getElementById('fileUploadModal').style.display = 'block';
+    }
+
+    handleFileSelection(event) {
+        const files = Array.from(event.target.files);
+        const uploadedFilesContainer = document.getElementById('uploadedFiles');
+        
+        uploadedFilesContainer.innerHTML = files.map(file => `
+            <div class="uploaded-file">
+                <i class="fas fa-file"></i>
+                <span class="file-name">${file.name}</span>
+                <span class="file-size">(${this.formatFileSize(file.size)})</span>
+            </div>
+        `).join('');
+    }
+
+    async processUploadedFiles() {
+        const files = document.getElementById('fileInput').files;
+        
+        if (files.length === 0) {
+            this.showNotification('Please select files to upload', 'error');
+            return;
+        }
+
         try {
-            this.showLoading('stopSessionBtn', 'Stopping...');
+            for (let file of files) {
+                // For now, we'll just add the filename as an app
+                const appName = file.name.replace(/\.[^/.]+$/, ""); // Remove extension
+                await this.addAppToCategory(appName, 'selected');
+            }
             
-            const result = await ipcRenderer.invoke('stop-session');
+            this.showNotification(`Processed ${files.length} files`, 'success');
+            document.getElementById('fileUploadModal').style.display = 'none';
+        } catch (error) {
+            this.showNotification(`Error processing files: ${error.message}`, 'error');
+        }
+    }
+
+    showPackageManagerModal() {
+        document.getElementById('packageManagerModal').style.display = 'block';
+    }
+
+    async browseSystemApps() {
+        try {
+            const result = await ipcRenderer.invoke('browse-system-apps');
             
             if (result.success) {
-                this.currentSession = null;
-                this.updateSessionUI(false);
-                this.showSessionSummary(result.summary);
-                this.showNotification('Session stopped successfully!', 'success');
+                this.displayApps(result.apps, 'packageList');
             } else {
-                throw new Error(result.error);
+                this.showNotification(`Failed to browse system: ${result.error}`, 'error');
             }
         } catch (error) {
-            console.error('Error stopping session:', error);
-            this.showNotification(`Failed to stop session: ${error.message}`, 'error');
-        } finally {
-            this.hideLoading('stopSessionBtn');
+            this.showNotification(`Error browsing system: ${error.message}`, 'error');
         }
     }
 
-    handleSessionUpdate(data) {
-        this.updateSessionUI(data.active);
-    }
-
-    updateSessionUI(sessionActive) {
-        const sessionControls = document.getElementById('sessionControls');
-        const sessionStatus = document.getElementById('sessionStatus');
-        const startBtn = document.getElementById('startSessionBtn');
-        const stopBtn = document.getElementById('stopSessionBtn');
-
-        if (sessionActive) {
-            sessionControls.classList.add('session-active');
-            sessionStatus.innerHTML = '<i class="fas fa-circle text-success"></i> Session Active';
-            startBtn.disabled = true;
-            stopBtn.disabled = false;
-        } else {
-            sessionControls.classList.remove('session-active');
-            sessionStatus.innerHTML = '<i class="fas fa-circle text-secondary"></i> No Active Session';
-            startBtn.disabled = false;
-            stopBtn.disabled = true;
-        }
-    }
-
-    updateFocusDisplay(data) {
-        const focusDisplay = document.getElementById('focusDisplay');
-        const currentApp = document.getElementById('currentApp');
-        const focusTime = document.getElementById('focusTime');
-        const distractionTime = document.getElementById('distractionTime');
-
-        if (data.status === 'focused') {
-            focusDisplay.className = 'focus-status focused';
-            currentApp.textContent = data.app;
-            focusTime.textContent = this.formatTime(data.duration);
-        } else {
-            focusDisplay.className = 'focus-status distracted';
-            currentApp.textContent = data.app;
-            distractionTime.textContent = this.formatTime(data.duration);
-        }
-    }
-
-    showApprovalDialog(data) {
-        const modal = document.getElementById('approvalModal');
-        const message = document.getElementById('approvalMessage');
-        const requestId = document.getElementById('approvalRequestId');
-
-        message.textContent = data.message;
-        requestId.value = data.requestId;
-
-        this.showModal('approvalModal');
+    showAppApprovalModal(data) {
+        this.currentApprovalRequest = data;
+        document.getElementById('approvalMessage').textContent = data.message;
+        document.getElementById('appApprovalModal').style.display = 'block';
     }
 
     async handleAppApproval(approved) {
-        const requestId = document.getElementById('approvalRequestId').value;
-        
-        try {
-            await ipcRenderer.invoke('handle-app-approval', requestId, approved);
-            this.hideModal('approvalModal');
-            
-            if (approved) {
-                this.showNotification('App access granted', 'info');
-            } else {
-                this.showNotification('App access denied', 'info');
+        if (this.currentApprovalRequest) {
+            try {
+                await ipcRenderer.invoke('handle-app-approval', this.currentApprovalRequest.requestId, approved);
+                
+                if (approved) {
+                    this.showNotification(`Allowed access to ${this.currentApprovalRequest.appName}`, 'info');
+                } else {
+                    this.showNotification(`Blocked access to ${this.currentApprovalRequest.appName}`, 'warning');
+                }
+            } catch (error) {
+                this.showNotification(`Error handling approval: ${error.message}`, 'error');
             }
-        } catch (error) {
-            console.error('Error handling app approval:', error);
-            this.showNotification('Error processing approval', 'error');
+            
+            this.currentApprovalRequest = null;
+            document.getElementById('appApprovalModal').style.display = 'none';
         }
     }
 
     showSessionSummary(summary) {
-        const modal = document.getElementById('sessionSummaryModal');
         const content = document.getElementById('sessionSummaryContent');
-
-        const distractionDetails = (summary.distractionDetails || []).map(detail => 
-            `<li>${this.escapeHtml(detail.appName)}: ${this.formatTime(detail.timeSpent)}</li>`
-        ).join('');
-
+        
         content.innerHTML = `
-            <div class="summary-section">
-                <h4>Session Overview</h4>
-                <p><strong>Session:</strong> ${this.escapeHtml(summary.sessionName)}</p>
-                <p><strong>Duration:</strong> ${this.formatTime(summary.totalDuration)}</p>
-                <p><strong>Productivity Score:</strong> ${summary.productivity}%</p>
-            </div>
-            
-            <div class="summary-section">
-                <h4>Time Breakdown</h4>
-                <p><strong>Focused Time:</strong> ${this.formatTime(summary.focusedTime)}</p>
-                <p><strong>Distracted Time:</strong> ${this.formatTime(summary.distractedTime)}</p>
-                <p><strong>Blocked Attempts:</strong> ${summary.blockedCount}</p>
-            </div>
-            
-            <div class="summary-section">
-                <h4>Distraction Details</h4>
-                ${distractionDetails ? `<ul>${distractionDetails}</ul>` : '<p>No distractions recorded</p>'}
-            </div>
-            
-            <div class="summary-section">
-                <h4>Selected Apps</h4>
-                <p>${summary.selectedApps.map(app => this.escapeHtml(app)).join(', ')}</p>
+            <div class="session-summary">
+                <div class="summary-header">
+                    <h4>${summary.sessionName}</h4>
+                    <p>${new Date(summary.startTime).toLocaleString()} - ${new Date(summary.endTime).toLocaleString()}</p>
+                </div>
+                
+                <div class="summary-stats">
+                    <div class="stat-row">
+                        <span class="stat-label">Total Duration:</span>
+                        <span class="stat-value">${this.formatTime(summary.totalDuration)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Focused Time:</span>
+                        <span class="stat-value">${this.formatTime(summary.focusedTime)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Distracted Time:</span>
+                        <span class="stat-value">${this.formatTime(summary.distractedTime)}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Blocked Attempts:</span>
+                        <span class="stat-value">${summary.blockedAttempts}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Productivity Score:</span>
+                        <span class="stat-value">${summary.productivity}%</span>
+                    </div>
+                </div>
+
+                ${summary.distractionDetails.length > 0 ? `
+                <div class="distraction-breakdown">
+                    <h5>Distraction Breakdown:</h5>
+                    ${summary.distractionDetails.map(detail => `
+                        <div class="distraction-item">
+                            <span class="app-name">${detail.appName}</span>
+                            <span class="time-spent">${this.formatTime(detail.timeSpent)}</span>
+                            <span class="attempts">${detail.attempts} attempts</span>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : ''}
+
+                ${summary.appUsageBreakdown.length > 0 ? `
+                <div class="usage-breakdown">
+                    <h5>App Usage:</h5>
+                    ${summary.appUsageBreakdown.map(usage => `
+                        <div class="usage-item">
+                            <span class="app-name">${usage.appName}</span>
+                            <span class="time-spent">${this.formatTime(usage.timeSpent)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                ` : ''}
             </div>
         `;
 
-        this.showModal('sessionSummaryModal');
+        document.getElementById('sessionSummaryModal').style.display = 'block';
     }
 
-    // Modal management
-    showModal(modalId) {
-        document.getElementById(modalId).style.display = 'block';
-    }
-
-    hideModal(modalId) {
-        document.getElementById(modalId).style.display = 'none';
-    }
-
-    showAddManualAppModal() {
-        this.showModal('addManualAppModal');
-    }
-
-    showUploadAppModal() {
-        this.showModal('uploadAppModal');
-    }
-
-    showPackageManagerModal() {
-        this.showModal('packageManagerModal');
-    }
-
-    async handleManualAppSubmit(e) {
-        e.preventDefault();
+    async loadSessionHistory() {
+        const container = document.getElementById('sessionHistoryList');
         
-        const appName = document.getElementById('manualAppName').value;
-        const category = document.getElementById('manualAppCategory').value;
-
-        if (!appName.trim()) {
-            this.showNotification('Please enter an app name', 'warning');
+        if (this.sessionStats.length === 0) {
+            container.innerHTML = '<div class="no-apps">No session history available</div>';
             return;
         }
 
-        try {
-            await this.addAppToCategory(appName.trim(), category);
-            document.getElementById('manualAppForm').reset();
-            this.hideModal('addManualAppModal');
-        } catch (error) {
-            console.error('Error adding manual app:', error);
-        }
+        container.innerHTML = this.sessionStats.map(session => `
+            <div class="session-history-item">
+                <div class="session-info">
+                    <div class="session-name">${session.sessionName}</div>
+                    <div class="session-date">${new Date(session.startTime).toLocaleDateString()}</div>
+                </div>
+                <div class="session-stats">
+                    <span class="stat">${this.formatTime(session.totalDuration)}</span>
+                    <span class="stat">${session.productivity}%</span>
+                    <span class="stat">${session.blockedAttempts} blocks</span>
+                </div>
+                <div class="session-actions">
+                    <button class="btn btn-sm btn-info view-summary-btn" data-session-id="${session.sessionId}">
+                        <i class="fas fa-chart-bar"></i> View
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        // Add event listeners to view buttons
+        container.querySelectorAll('.view-summary-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const sessionId = e.target.closest('.view-summary-btn').dataset.sessionId;
+                const session = this.sessionStats.find(s => s.sessionId === sessionId);
+                if (session) {
+                    this.showSessionSummary(session);
+                }
+            });
+        });
     }
 
-    async handleUploadAppSubmit() {
-        const fileInput = document.getElementById('appFile');
-        const category = document.getElementById('uploadAppCategory').value;
-        const file = fileInput.files[0];
+    async saveSettings() {
+        const settings = {
+            checkInterval: parseInt(document.getElementById('checkInterval').value) || 2000,
+            autoStart: document.getElementById('autoStart').checked,
+            notifications: document.getElementById('notifications').checked,
+            focusMode: document.getElementById('focusMode').value
+        };
 
-        if (!file || !file.path) {
-            this.showNotification('Please choose an application file', 'warning');
-            return;
-        }
-
-        try {
-            const result = await ipcRenderer.invoke('add-app-from-file', file.path, category);
-            if (!result.success) {
-                throw new Error(result.error);
-            }
-
-            this.addLocalApp(result.app.name, category);
-            this.updateUI();
-            fileInput.value = '';
-            this.hideModal('uploadAppModal');
-            this.showNotification(`Added ${result.app.name} to ${category} apps`, 'success');
-        } catch (error) {
-            console.error('Error uploading app:', error);
-            this.showNotification(`Failed to add file: ${error.message}`, 'error');
-        }
-    }
-
-    async handlePackageAppSubmit() {
-        const packageName = document.getElementById('packageName').value.trim();
-        const category = document.getElementById('packageCategory').value;
-
-        if (!packageName) {
-            this.showNotification('Please enter a package or app name', 'warning');
-            return;
-        }
-
-        try {
-            const result = await ipcRenderer.invoke('add-app-by-package', packageName, category);
-            if (!result.success) {
-                throw new Error(result.error);
-            }
-
-            this.addLocalApp(result.app.name, category);
-            this.updateUI();
-            document.getElementById('packageName').value = '';
-            this.hideModal('packageManagerModal');
-            this.showNotification(`Added ${result.app.name} to ${category} apps`, 'success');
-        } catch (error) {
-            console.error('Error adding package app:', error);
-            this.showNotification(`Failed to add package: ${error.message}`, 'error');
-        }
-    }
-
-    addLocalApp(appName, category) {
-        if (category === 'selected') {
-            this.selectedApps.add(appName);
-        } else if (category === 'blocked') {
-            this.blockedApps.add(appName);
-        } else if (category === 'allowed') {
-            this.allowedApps.add(appName);
-        }
-    }
-
-    async searchApps(query) {
-        if (!query.trim()) {
-            this.displayDetectedApps(this.detectedApps);
-            return;
-        }
-
-        try {
-            const result = await ipcRenderer.invoke('search-apps', query);
-            if (result.success) {
-                this.displayDetectedApps(result.apps);
-            }
-        } catch (error) {
-            console.error('Error searching apps:', error);
-        }
+        // In a real app, you'd save these to a settings file
+        localStorage.setItem('appSettings', JSON.stringify(settings));
+        this.showNotification('Settings saved successfully!', 'success');
     }
 
     async clearAllData() {
-        if (!confirm('Are you sure you want to clear all data? This cannot be undone.')) {
-            return;
-        }
-
-        try {
-            const result = await ipcRenderer.invoke('clear-all-data');
-            
-            if (result.success) {
-                this.selectedApps.clear();
-                this.allowedApps.clear();
-                this.blockedApps.clear();
-                this.sessionStats = [];
-                this.updateUI();
-                this.showNotification('All data cleared successfully', 'success');
-            } else {
-                throw new Error(result.error);
+        if (confirm('Are you sure you want to clear all data? This action cannot be undone.')) {
+            try {
+                const result = await ipcRenderer.invoke('clear-all-data');
+                
+                if (result.success) {
+                    this.selectedApps.clear();
+                    this.allowedApps.clear();
+                    this.blockedApps.clear();
+                    this.sessionStats = [];
+                    this.showNotification('All data cleared successfully!', 'success');
+                    this.updateUI();
+                } else {
+                    this.showNotification(`Failed to clear data: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                this.showNotification(`Error clearing data: ${error.message}`, 'error');
             }
-        } catch (error) {
-            console.error('Error clearing data:', error);
-            this.showNotification(`Failed to clear data: ${error.message}`, 'error');
         }
     }
 
     async exportData() {
-        try {
-            const data = {
-                selectedApps: Array.from(this.selectedApps),
-                allowedApps: Array.from(this.allowedApps),
-                blockedApps: Array.from(this.blockedApps),
-                sessionStats: this.sessionStats
-            };
+        // Simple export implementation - in real app, you'd use dialog to save file
+        const data = {
+            selectedApps: Array.from(this.selectedApps),
+            allowedApps: Array.from(this.allowedApps),
+            blockedApps: Array.from(this.blockedApps),
+            sessionStats: this.sessionStats
+        };
 
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `focus-app-data-${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            
-            this.showNotification('Data exported successfully', 'success');
-        } catch (error) {
-            console.error('Error exporting data:', error);
-            this.showNotification('Failed to export data', 'error');
+        const dataStr = JSON.stringify(data, null, 2);
+        const dataBlob = new Blob([dataStr], {type: 'application/json'});
+        
+        // Create download link
+        const url = URL.createObjectURL(dataBlob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `locked-in-data-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        this.showNotification('Data exported successfully!', 'success');
+    }
+
+    updateUI() {
+        // Update session controls
+        document.getElementById('startSessionBtn').disabled = this.sessionActive;
+        document.getElementById('stopSessionBtn').disabled = !this.sessionActive;
+
+        // Update status indicator
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        
+        if (this.sessionActive) {
+            statusIndicator.className = 'status-indicator active';
+            statusText.textContent = 'Session Active';
+        } else {
+            statusIndicator.className = 'status-indicator';
+            statusText.textContent = 'No Active Session';
         }
+
+        // Update app counts
+        document.getElementById('selectedAppsCount').textContent = this.selectedApps.size;
+        document.getElementById('blockedAppsCount').textContent = this.blockedApps.size;
+        document.getElementById('totalSessions').textContent = this.sessionStats.length;
+        
+        // Calculate average productivity
+        const avgProductivity = this.sessionStats.length > 0 
+            ? Math.round(this.sessionStats.reduce((sum, session) => sum + session.productivity, 0) / this.sessionStats.length)
+            : 0;
+        document.getElementById('productivityScore').textContent = `${avgProductivity}%`;
+
+        // Update app lists
+        this.updateAppLists();
+    }
+
+    updateAppLists() {
+        // Dashboard lists
+        this.displayAppList(Array.from(this.selectedApps), 'selectedAppsList');
+        this.displayAppList(Array.from(this.blockedApps), 'blockedAppsList');
+
+        // Management lists
+        this.displayAppList(Array.from(this.selectedApps), 'selectedAppsListManage');
+        this.displayAppList(Array.from(this.allowedApps), 'allowedAppsList');
+        this.displayAppList(Array.from(this.blockedApps), 'blockedAppsListManage');
+
+        // Update counts
+        document.getElementById('selectedAppsCountHeader').textContent = `${this.selectedApps.size} apps`;
+        document.getElementById('blockedAppsCountHeader').textContent = `${this.blockedApps.size} apps`;
+        document.getElementById('selectedAppsCountManage').textContent = `${this.selectedApps.size} apps`;
+        document.getElementById('allowedAppsCount').textContent = `${this.allowedApps.size} apps`;
+        document.getElementById('blockedAppsCountManage').textContent = `${this.blockedApps.size} apps`;
+    }
+
+    displayAppList(apps, containerId) {
+        const container = document.getElementById(containerId);
+        
+        if (apps.length === 0) {
+            container.innerHTML = '<div class="no-apps">No applications</div>';
+            return;
+        }
+
+        container.innerHTML = apps.map(appName => `
+            <div class="app-item">
+                <div class="app-info">
+                    <div class="app-name">${appName}</div>
+                </div>
+                <div class="app-actions">
+                    <button class="btn btn-sm btn-danger remove-app-btn" data-app="${appName}">
+                        <i class="fas fa-trash"></i> Remove
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        // Add event listeners to remove buttons
+        container.querySelectorAll('.remove-app-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const appName = e.target.closest('.remove-app-btn').dataset.app;
+                if (confirm(`Remove "${appName}" from list?`)) {
+                    try {
+                        const result = await ipcRenderer.invoke('remove-app', appName);
+                        
+                        if (result.success) {
+                            this.selectedApps.delete(appName);
+                            this.allowedApps.delete(appName);
+                            this.blockedApps.delete(appName);
+                            this.showNotification(`Removed ${appName}`, 'success');
+                            this.updateUI();
+                        } else {
+                            this.showNotification(`Failed to remove app: ${result.error}`, 'error');
+                        }
+                    } catch (error) {
+                        this.showNotification(`Error removing app: ${error.message}`, 'error');
+                    }
+                }
+            });
+        });
     }
 
     // Utility methods
-    showSection(sectionId) {
-        document.querySelectorAll('.section').forEach(section => {
-            section.classList.remove('active');
-        });
-        document.getElementById(sectionId).classList.add('active');
-    }
-
-    showLoading(buttonId, text = 'Loading...') {
-        const button = document.getElementById(buttonId);
-        const originalText = button.innerHTML;
-        button.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${text}`;
-        button.disabled = true;
-        button.dataset.originalText = originalText;
-    }
-
-    hideLoading(buttonId) {
-        const button = document.getElementById(buttonId);
-        if (button.dataset.originalText) {
-            button.innerHTML = button.dataset.originalText;
-            button.disabled = false;
+    formatTime(seconds) {
+        if (seconds < 60) {
+            return `${Math.round(seconds)}s`;
+        } else if (seconds < 3600) {
+            return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+        } else {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            return `${hours}h ${minutes}m`;
         }
+    }
+
+    formatStatus(status) {
+        const statusMap = {
+            'focused': 'Focused',
+            'distracted': 'Distracted',
+            'blocked': 'Blocked',
+            'unknown': 'Unknown App',
+            'inactive': 'Inactive'
+        };
+        return statusMap[status] || status;
+    }
+
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
 
     showNotification(message, type = 'info') {
-        const notification = document.getElementById('notification');
-        notification.textContent = message;
-        notification.className = `notification ${type} show`;
-        
-        setTimeout(() => {
-            notification.classList.remove('show');
-        }, 3000);
-    }
+        // Simple notification implementation
+        const notification = document.createElement('div');
+        notification.className = `notification notification-${type}`;
+        notification.innerHTML = `
+            <div class="notification-content">
+                <i class="fas fa-${type === 'success' ? 'check' : type === 'error' ? 'exclamation-triangle' : 'info'}-circle"></i>
+                <span>${message}</span>
+            </div>
+        `;
 
-    formatTime(seconds) {
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-        
-        if (hours > 0) {
-            return `${hours}h ${minutes}m ${secs}s`;
-        } else if (minutes > 0) {
-            return `${minutes}m ${secs}s`;
-        } else {
-            return `${secs}s`;
+        document.body.appendChild(notification);
+
+        // Add styles if not already added
+        if (!document.getElementById('notification-styles')) {
+            const styles = document.createElement('style');
+            styles.id = 'notification-styles';
+            styles.textContent = `
+                .notification {
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    padding: 12px 20px;
+                    border-radius: 8px;
+                    color: white;
+                    z-index: 10000;
+                    max-width: 300px;
+                    animation: slideIn 0.3s ease-out;
+                }
+                .notification-success { background: #28a745; }
+                .notification-error { background: #dc3545; }
+                .notification-info { background: #17a2b8; }
+                .notification-warning { background: #ffc107; color: #212529; }
+                @keyframes slideIn {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+            `;
+            document.head.appendChild(styles);
         }
-    }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        // Remove after 3 seconds
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 3000);
     }
 }
 
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.focusApp = new FocusAppRenderer();
+    new FocusAppRenderer();
 });
