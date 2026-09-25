@@ -1,44 +1,21 @@
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const util = require('util');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
-const { app } = require('electron');
 
 const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
 
 class AppScanner {
     constructor() {
         this.detectedApps = [];
-        this.commonApps = this.getCommonApps();
-    }
-
-    getCommonApps() {
-        return {
-            windows: [
-                'notepad.exe', 'calc.exe', 'mspaint.exe', 'write.exe', 'snippingtool.exe',
-                'chrome.exe', 'firefox.exe', 'msedge.exe', 'opera.exe', 'brave.exe',
-                'code.exe', 'devenv.exe', 'pycharm.exe', 'webstorm.exe', 'intellij.exe',
-                'outlook.exe', 'excel.exe', 'winword.exe', 'powerpnt.exe', 'onenote.exe',
-                'teams.exe', 'slack.exe', 'discord.exe', 'zoom.exe', 'skype.exe',
-                'spotify.exe', 'vlc.exe', 'photoshop.exe', 'illustrator.exe', 'acrobat.exe',
-                'explorer.exe', 'taskmgr.exe', 'cmd.exe', 'powershell.exe', 'regedit.exe'
-            ],
-            macos: [
-                'Safari', 'Google Chrome', 'Firefox', 'Microsoft Edge', 'Opera',
-                'Visual Studio Code', 'Xcode', 'Android Studio', 'PyCharm', 'IntelliJ IDEA',
-                'Microsoft Outlook', 'Microsoft Excel', 'Microsoft Word', 'Microsoft PowerPoint',
-                'Microsoft OneNote', 'Teams', 'Slack', 'Discord', 'Zoom', 'Skype',
-                'Spotify', 'VLC', 'Photoshop', 'Illustrator', 'Acrobat Reader',
-                'Finder', 'Terminal', 'System Preferences', 'Activity Monitor', 'Console'
-            ],
-            linux: [
-                'firefox', 'google-chrome', 'chromium', 'opera', 'brave-browser',
-                'code', 'android-studio', 'pycharm', 'intellij-idea',
-                'libreoffice', 'thunderbird', 'evolution',
-                'slack', 'discord', 'zoom', 'skype',
-                'spotify', 'vlc', 'gimp', 'inkscape',
-                'nautilus', 'gnome-terminal', 'konsole', 'system-monitor'
-            ]
+        this.categories = {
+            office: ['Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Teams', 'Access', 'Publisher', 'Visio', 'Project', '365', 'Office'],
+            productivity: ['Code', 'Visual Studio', 'Notion', 'Obsidian', 'Slack', 'Discord', 'Zoom', 'Trello', 'Asana', 'Figma', 'Todoist', 'Evernote', 'Git', 'Sublime', 'PyCharm', 'IntelliJ', 'WebStorm', 'Postman', 'Docker', 'Terminal', 'PowerShell'],
+            pwa: ['PWA', 'Chrome App', 'Edge App', 'Web App', 'Google Docs', 'Google Sheets', 'Google Slides', 'Canva', 'WhatsApp Web', 'Telegram Web', 'YouTube Music', 'Linear'],
+            browsers: ['Chrome', 'Edge', 'Firefox', 'Brave', 'Opera', 'Vivaldi', 'Safari', 'Chromium', 'Tor Browser'],
+            media: ['Spotify', 'VLC', 'Photoshop', 'Illustrator', 'Premiere', 'After Effects', 'Blender', 'Audacity', 'Steam', 'Epic Games', 'GIMP']
         };
     }
 
@@ -47,35 +24,23 @@ class AppScanner {
             const platform = process.platform;
             let apps = [];
 
-            switch (platform) {
-                case 'win32':
-                    apps = await this.scanWindowsApps();
-                    break;
-                case 'darwin':
-                    apps = await this.scanMacOSApps();
-                    break;
-                case 'linux':
-                    apps = await this.scanLinuxApps();
-                    break;
-                default:
-                    console.warn(`Unsupported platform: ${platform}`);
+            if (platform === 'win32') {
+                apps = await this.scanWindowsDeep();
+            } else if (platform === 'darwin') {
+                apps = await this.scanMacOSApps();
+            } else {
+                apps = await this.scanLinuxApps();
             }
 
-            // Add common apps for the platform
-            const commonApps = this.commonApps[platform] || [];
-            for (const appName of commonApps) {
-                if (!apps.find(app => app.name.toLowerCase() === appName.toLowerCase())) {
-                    apps.push({
-                        name: appName,
-                        type: 'Common Application',
-                        executable: appName,
-                        path: '',
-                        publisher: 'System'
-                    });
+            // Also add standard common & office apps to ensure comprehensive coverage
+            const curatedApps = this.getCuratedApps();
+            for (const item of curatedApps) {
+                if (!apps.some(a => a.name.toLowerCase() === item.name.toLowerCase())) {
+                    apps.push(item);
                 }
             }
 
-            // Remove duplicates and sort
+            // Remove duplicates and sort alphabetically
             apps = this.removeDuplicates(apps);
             apps.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -83,264 +48,315 @@ class AppScanner {
             return { success: true, apps: apps };
         } catch (error) {
             console.error('Error scanning for apps:', error);
-            return { success: false, error: error.message, apps: [] };
+            return { success: false, error: error.message, apps: this.getCuratedApps() };
         }
     }
 
-    async scanWindowsApps() {
+    async scanWindowsDeep() {
         const apps = [];
+        const seenNames = new Set();
 
-        try {
-            // Method 1: Query registry for installed programs
-            const registryQuery = `reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" /s`;
-            const { stdout } = await execPromise(registryQuery);
+        const addApp = (name, type, executable = '', appPath = '', publisher = '') => {
+            if (!name || typeof name !== 'string') return;
+            const cleanName = name.trim();
+            if (!cleanName || cleanName.length < 2) return;
             
-            const lines = stdout.split('\n');
-            let currentApp = {};
-            
-            for (const line of lines) {
-                const trimmed = line.trim();
-                
-                if (trimmed.startsWith('HKEY_')) {
-                    if (currentApp.name) {
-                        apps.push(currentApp);
-                    }
-                    currentApp = {};
-                } else if (trimmed.startsWith('DisplayName')) {
-                    const match = trimmed.match(/REG_SZ\s+(.+)/);
-                    if (match) {
-                        currentApp.name = match[1].trim();
-                    }
-                } else if (trimmed.startsWith('Publisher')) {
-                    const match = trimmed.match(/REG_SZ\s+(.+)/);
-                    if (match) {
-                        currentApp.publisher = match[1].trim();
-                    }
-                } else if (trimmed.startsWith('InstallLocation')) {
-                    const match = trimmed.match(/REG_SZ\s+(.+)/);
-                    if (match) {
-                        currentApp.path = match[1].trim();
-                    }
-                }
+            // Filter out system updates, drivers, and junk
+            if (/^(KB\d+|Security Update|Hotfix|Update for |Windows Software Development Kit|Microsoft Visual C\+\+ 20\d\d Redistributable|Microsoft .NET Framework)/i.test(cleanName)) {
+                return;
             }
-            
-            if (currentApp.name) {
-                apps.push(currentApp);
-            }
-        } catch (error) {
-            console.warn('Registry scan failed:', error.message);
-        }
 
+            const lower = cleanName.toLowerCase();
+            if (seenNames.has(lower)) return;
+            seenNames.add(lower);
+
+            const category = this.categorizeApp(cleanName, type);
+            apps.push({
+                name: cleanName,
+                type: category,
+                executable: executable || cleanName,
+                path: appPath || '',
+                publisher: publisher || 'Unknown'
+            });
+        };
+
+        // 1. Scan Start Menu Shortcuts (User and All Users)
         try {
-            // Method 2: Check common installation directories
-            const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-            const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-            
-            const commonDirs = [
-                programFiles,
-                programFilesX86,
-                path.join(process.env.USERPROFILE || '', 'AppData', 'Local'),
-                path.join(process.env.USERPROFILE || '', 'AppData', 'Roaming')
+            const startMenuPaths = [
+                path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
+                path.join(process.env.ProgramData || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs')
             ];
 
-            for (const baseDir of commonDirs) {
-                try {
-                    const entries = await fs.readdir(baseDir, { withFileTypes: true });
-                    
-                    for (const entry of entries) {
-                        if (entry.isDirectory()) {
-                            const appDir = path.join(baseDir, entry.name);
-                            const exeFiles = await this.findExeFiles(appDir);
-                            
-                            for (const exeFile of exeFiles) {
-                                const appName = path.basename(exeFile, path.extname(exeFile));
-                                if (!apps.find(a => a.name === appName)) {
-                                    apps.push({
-                                        name: appName,
-                                        type: 'Installed Application',
-                                        executable: exeFile,
-                                        path: appDir,
-                                        publisher: 'Unknown'
-                                    });
-                                }
-                            }
-                        }
-                    }
-                } catch (error) {
-                    console.warn(`Could not scan directory ${baseDir}:`, error.message);
+            for (const basePath of startMenuPaths) {
+                if (fsSync.existsSync(basePath)) {
+                    await this.scanShortcutDirectory(basePath, addApp);
                 }
             }
-        } catch (error) {
-            console.warn('Directory scan failed:', error.message);
+        } catch (e) {
+            console.warn('Start menu scan warning:', e.message);
+        }
+
+        // 2. Scan Registry Uninstall Keys (64-bit, 32-bit, HKCU User)
+        const registryKeys = [
+            'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+            'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+            'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+        ];
+
+        for (const regKey of registryKeys) {
+            try {
+                const { stdout } = await execPromise(`reg query "${regKey}" /s`, { maxBuffer: 10 * 1024 * 1024, timeout: 5000 });
+                const lines = stdout.split('\r\n');
+                let currentApp = {};
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('HKEY_')) {
+                        if (currentApp.name && !currentApp.systemComponent && !currentApp.parentKeyName) {
+                            addApp(currentApp.name, 'Installed Application', currentApp.exe, currentApp.path, currentApp.publisher);
+                        }
+                        currentApp = {};
+                    } else if (trimmed.startsWith('DisplayName')) {
+                        const match = trimmed.match(/DisplayName\s+REG_SZ\s+(.+)/i);
+                        if (match) currentApp.name = match[1].trim();
+                    } else if (trimmed.startsWith('Publisher')) {
+                        const match = trimmed.match(/Publisher\s+REG_SZ\s+(.+)/i);
+                        if (match) currentApp.publisher = match[1].trim();
+                    } else if (trimmed.startsWith('DisplayIcon')) {
+                        const match = trimmed.match(/DisplayIcon\s+REG_SZ\s+(.+)/i);
+                        if (match) {
+                            const iconPath = match[1].split(',')[0].trim().replace(/^"|"$/g, '');
+                            if (iconPath.toLowerCase().endsWith('.exe')) {
+                                currentApp.exe = iconPath;
+                            }
+                        }
+                    } else if (trimmed.startsWith('InstallLocation')) {
+                        const match = trimmed.match(/InstallLocation\s+REG_SZ\s+(.+)/i);
+                        if (match) currentApp.path = match[1].trim();
+                    } else if (trimmed.startsWith('SystemComponent')) {
+                        const match = trimmed.match(/SystemComponent\s+REG_DWORD\s+0x1/i);
+                        if (match) currentApp.systemComponent = true;
+                    } else if (trimmed.startsWith('ParentKeyName')) {
+                        currentApp.parentKeyName = true;
+                    }
+                }
+                if (currentApp.name && !currentApp.systemComponent && !currentApp.parentKeyName) {
+                    addApp(currentApp.name, 'Installed Application', currentApp.exe, currentApp.path, currentApp.publisher);
+                }
+            } catch (err) {
+                // Registry key might not exist or had read timeout
+            }
+        }
+
+        // 3. Scan Chrome & Edge Progressive Web Apps (PWAs)
+        try {
+            const pwaDirs = [
+                path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Chrome Apps'),
+                path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Edge Apps')
+            ];
+            for (const pwaDir of pwaDirs) {
+                if (fsSync.existsSync(pwaDir)) {
+                    const entries = await fs.readdir(pwaDir);
+                    for (const entry of entries) {
+                        if (entry.toLowerCase().endsWith('.lnk')) {
+                            const name = path.basename(entry, path.extname(entry));
+                            addApp(name, 'Progressive Web App (PWA)', '', pwaDir, 'PWA');
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignore PWA read error
+        }
+
+        // 4. Scan Currently Running Processes with Main Window
+        try {
+            const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -Unique ProcessName, MainWindowTitle | ConvertTo-Json"', { timeout: 3000 });
+            if (stdout && stdout.trim()) {
+                const procs = JSON.parse(stdout.trim());
+                const procList = Array.isArray(procs) ? procs : [procs];
+                for (const p of procList) {
+                    if (p && p.ProcessName) {
+                        const name = p.ProcessName;
+                        if (!['electron', 'locked-in', 'explorer', 'shellexperiencehost', 'searchapp', 'systemsettings'].includes(name.toLowerCase())) {
+                            addApp(name, 'Running Application', `${name}.exe`, '', 'System');
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignore process list error
         }
 
         return apps;
     }
 
+    async scanShortcutDirectory(dir, addApp, depth = 0) {
+        if (depth > 4) return;
+        try {
+            const entries = await fs.readdir(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    await this.scanShortcutDirectory(fullPath, addApp, depth + 1);
+                } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.lnk')) {
+                    const appName = path.basename(entry.name, '.lnk');
+                    // Skip uninstallers, help files, readme
+                    if (!/uninstall|documentation|help|read me|website|release notes/i.test(appName)) {
+                        let type = 'Installed Application';
+                        if (/word|excel|powerpoint|outlook|onenote|teams|access|publisher/i.test(appName)) {
+                            type = 'Microsoft Office';
+                        }
+                        addApp(appName, type, fullPath, dir, 'Local Machine');
+                    }
+                }
+            }
+        } catch (e) {
+            // Directory read failure
+        }
+    }
+
+    categorizeApp(appName, defaultType = 'Installed Application') {
+        const lower = appName.toLowerCase();
+        
+        for (const officeApp of this.categories.office) {
+            if (lower.includes(officeApp.toLowerCase())) {
+                return 'Microsoft Office & Business';
+            }
+        }
+
+        for (const pwaApp of this.categories.pwa) {
+            if (lower.includes(pwaApp.toLowerCase())) {
+                return 'Progressive Web App (PWA)';
+            }
+        }
+
+        for (const prodApp of this.categories.productivity) {
+            if (lower.includes(prodApp.toLowerCase())) {
+                return 'Productivity & Development';
+            }
+        }
+
+        for (const browser of this.categories.browsers) {
+            if (lower.includes(browser.toLowerCase())) {
+                return 'Web Browser & Communication';
+            }
+        }
+
+        for (const media of this.categories.media) {
+            if (lower.includes(media.toLowerCase())) {
+                return 'Media, Design & Games';
+            }
+        }
+
+        return defaultType;
+    }
+
+    getCuratedApps() {
+        return [
+            // Microsoft Office & 365 Suite
+            { name: 'Microsoft Word', type: 'Microsoft Office & Business', executable: 'winword.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft Excel', type: 'Microsoft Office & Business', executable: 'excel.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft PowerPoint', type: 'Microsoft Office & Business', executable: 'powerpnt.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft Outlook', type: 'Microsoft Office & Business', executable: 'outlook.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft OneNote', type: 'Microsoft Office & Business', executable: 'onenote.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft Teams', type: 'Microsoft Office & Business', executable: 'teams.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft Access', type: 'Microsoft Office & Business', executable: 'msaccess.exe', publisher: 'Microsoft Corporation' },
+            { name: 'Microsoft Publisher', type: 'Microsoft Office & Business', executable: 'mspub.exe', publisher: 'Microsoft Corporation' },
+            
+            // Productivity & Dev
+            { name: 'Visual Studio Code', type: 'Productivity & Development', executable: 'code.exe', publisher: 'Microsoft' },
+            { name: 'Visual Studio', type: 'Productivity & Development', executable: 'devenv.exe', publisher: 'Microsoft' },
+            { name: 'Notion', type: 'Productivity & Development', executable: 'Notion.exe', publisher: 'Notion Labs' },
+            { name: 'Obsidian', type: 'Productivity & Development', executable: 'Obsidian.exe', publisher: 'Obsidian' },
+            { name: 'Slack', type: 'Productivity & Development', executable: 'slack.exe', publisher: 'Slack Technologies' },
+            { name: 'Discord', type: 'Web Browser & Communication', executable: 'discord.exe', publisher: 'Discord Inc.' },
+            { name: 'Zoom', type: 'Productivity & Development', executable: 'Zoom.exe', publisher: 'Zoom Video Communications' },
+            { name: 'Figma', type: 'Productivity & Development', executable: 'Figma.exe', publisher: 'Figma' },
+            { name: 'Postman', type: 'Productivity & Development', executable: 'Postman.exe', publisher: 'Postman' },
+            
+            // PWAs & Web Apps
+            { name: 'Google Docs (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://docs.google.com', publisher: 'Google' },
+            { name: 'Google Sheets (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://sheets.google.com', publisher: 'Google' },
+            { name: 'Google Slides (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://slides.google.com', publisher: 'Google' },
+            { name: 'Linear (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://linear.app', publisher: 'Linear' },
+            { name: 'Trello (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://trello.com', publisher: 'Atlassian' },
+            { name: 'Canva (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://canva.com', publisher: 'Canva' },
+
+            // Browsers
+            { name: 'Google Chrome', type: 'Web Browser & Communication', executable: 'chrome.exe', publisher: 'Google LLC' },
+            { name: 'Microsoft Edge', type: 'Web Browser & Communication', executable: 'msedge.exe', publisher: 'Microsoft' },
+            { name: 'Mozilla Firefox', type: 'Web Browser & Communication', executable: 'firefox.exe', publisher: 'Mozilla' },
+            { name: 'Brave Browser', type: 'Web Browser & Communication', executable: 'brave.exe', publisher: 'Brave Software' },
+
+            // Utilities
+            { name: 'Notepad', type: 'Productivity & Development', executable: 'notepad.exe', publisher: 'Microsoft Windows' },
+            { name: 'Calculator', type: 'Productivity & Development', executable: 'calc.exe', publisher: 'Microsoft Windows' },
+            { name: 'Paint', type: 'Media, Design & Games', executable: 'mspaint.exe', publisher: 'Microsoft Windows' },
+            { name: 'Spotify', type: 'Media, Design & Games', executable: 'spotify.exe', publisher: 'Spotify AB' }
+        ];
+    }
+
     async scanMacOSApps() {
         const apps = [];
-
         try {
-            // Method 1: Scan /Applications directory
             const applicationsDir = '/Applications';
             const entries = await fs.readdir(applicationsDir, { withFileTypes: true });
-            
             for (const entry of entries) {
                 if (entry.isDirectory() && entry.name.endsWith('.app')) {
                     const appName = entry.name.replace('.app', '');
                     const appPath = path.join(applicationsDir, entry.name);
-                    
                     apps.push({
                         name: appName,
-                        type: 'Mac Application',
+                        type: this.categorizeApp(appName, 'Mac Application'),
                         executable: appPath,
                         path: appPath,
-                        publisher: 'Unknown'
+                        publisher: 'macOS'
                     });
                 }
             }
-        } catch (error) {
-            console.warn('Applications directory scan failed:', error.message);
+        } catch (e) {
+            console.warn('macOS scan warning:', e.message);
         }
-
-        try {
-            // Method 2: Use system_profiler to get installed apps
-            const { stdout } = await execPromise('system_profiler SPApplicationsDataType -json');
-            const data = JSON.parse(stdout);
-            
-            if (data && data.SPApplicationsDataType) {
-                for (const appInfo of data.SPApplicationsDataType) {
-                    if (appInfo.path && appInfo.path.includes('/Applications/')) {
-                        apps.push({
-                            name: appInfo._name || 'Unknown',
-                            type: 'Mac Application',
-                            executable: appInfo.path,
-                            path: appInfo.path,
-                            publisher: appInfo.obtained_from || 'Unknown'
-                        });
-                    }
-                }
-            }
-        } catch (error) {
-            console.warn('System profiler scan failed:', error.message);
-        }
-
         return apps;
     }
 
     async scanLinuxApps() {
         const apps = [];
-
         try {
-            // Method 1: Check .desktop files
             const desktopDirs = [
                 '/usr/share/applications',
                 '/usr/local/share/applications',
                 path.join(process.env.HOME || '', '.local/share/applications')
             ];
-
             for (const desktopDir of desktopDirs) {
-                try {
+                if (fsSync.existsSync(desktopDir)) {
                     const entries = await fs.readdir(desktopDir);
-                    
                     for (const entry of entries) {
                         if (entry.endsWith('.desktop')) {
                             const desktopFile = path.join(desktopDir, entry);
                             const content = await fs.readFile(desktopFile, 'utf8');
-                            
                             const nameMatch = content.match(/Name=(.+)/);
                             const execMatch = content.match(/Exec=(.+)/);
-                            
-                            if (nameMatch && execMatch) {
+                            if (nameMatch) {
                                 const appName = nameMatch[1].trim();
-                                const execCommand = execMatch[1].trim().split(' ')[0]; // Get first part of command
-                                
+                                const execCommand = execMatch ? execMatch[1].trim().split(' ')[0] : '';
                                 apps.push({
                                     name: appName,
-                                    type: 'Linux Application',
+                                    type: this.categorizeApp(appName, 'Linux Application'),
                                     executable: execCommand,
                                     path: desktopFile,
-                                    publisher: 'Unknown'
+                                    publisher: 'Linux'
                                 });
                             }
                         }
                     }
-                } catch (error) {
-                    console.warn(`Could not scan desktop directory ${desktopDir}:`, error.message);
                 }
             }
-        } catch (error) {
-            console.warn('Desktop files scan failed:', error.message);
+        } catch (e) {
+            console.warn('Linux scan warning:', e.message);
         }
-
-        try {
-            // Method 2: Check common binary locations
-            const pathDirs = (process.env.PATH || '').split(':');
-            for (const pathDir of pathDirs) {
-                try {
-                    const entries = await fs.readdir(pathDir);
-                    
-                    for (const entry of entries) {
-                        // Skip common system binaries
-                        if (!['ls', 'cd', 'cp', 'mv', 'rm', 'mkdir', 'rmdir'].includes(entry)) {
-                            const fullPath = path.join(pathDir, entry);
-                            try {
-                                const stats = await fs.stat(fullPath);
-                                if (stats.isFile() && (stats.mode & parseInt('111', 8))) { // Check if executable
-                                    apps.push({
-                                        name: entry,
-                                        type: 'System Application',
-                                        executable: fullPath,
-                                        path: pathDir,
-                                        publisher: 'System'
-                                    });
-                                }
-                            } catch (error) {
-                                // Ignore stat errors
-                            }
-                        }
-                    }
-                } catch (error) {
-                    // Ignore directory read errors
-                }
-            }
-        } catch (error) {
-            console.warn('PATH scan failed:', error.message);
-        }
-
         return apps;
-    }
-
-    async findExeFiles(dir, depth = 0) {
-        if (depth > 3) return []; // Limit recursion depth
-        
-        const exeFiles = [];
-        
-        try {
-            const entries = await fs.readdir(dir, { withFileTypes: true });
-            
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-                
-                if (entry.isDirectory()) {
-                    // Skip system and hidden directories
-                    if (!entry.name.startsWith('.') && 
-                        !['System32', 'SysWOW64', 'Windows', 'Temp', 'tmp'].includes(entry.name)) {
-                        const subFiles = await this.findExeFiles(fullPath, depth + 1);
-                        exeFiles.push(...subFiles);
-                    }
-                } else if (entry.isFile()) {
-                    const ext = path.extname(entry.name).toLowerCase();
-                    if (['.exe', '.com', '.bat'].includes(ext)) {
-                        exeFiles.push(fullPath);
-                    }
-                }
-            }
-        } catch (error) {
-            // Ignore directory access errors
-        }
-        
-        return exeFiles;
     }
 
     removeDuplicates(apps) {
@@ -358,13 +374,14 @@ class AppScanner {
     async addAppFromFile(filePath, category = 'selected') {
         try {
             const stats = await fs.stat(filePath);
-            
             if (!stats.isFile()) {
-                return { success: false, error: 'Path is not a file' };
+                return { success: false, error: 'Selected path is not a file' };
             }
 
-            const appName = path.basename(filePath, path.extname(filePath));
-            const appType = this.getAppTypeFromExtension(path.extname(filePath));
+            const fileName = path.basename(filePath);
+            const ext = path.extname(filePath);
+            const appName = path.basename(filePath, ext);
+            const appType = this.categorizeApp(appName, 'Custom Application');
 
             return {
                 success: true,
@@ -373,7 +390,8 @@ class AppScanner {
                     type: appType,
                     executable: filePath,
                     path: path.dirname(filePath),
-                    publisher: 'User Added'
+                    publisher: 'User Uploaded',
+                    category: category
                 }
             };
         } catch (error) {
@@ -383,79 +401,19 @@ class AppScanner {
     }
 
     async addAppByPackageName(packageName, category = 'selected') {
-        try {
-            // This would typically use system package managers
-            // For now, we'll just create a placeholder app entry
-            return {
-                success: true,
-                app: {
-                    name: packageName,
-                    type: 'Package Application',
-                    executable: packageName,
-                    path: '',
-                    publisher: 'Package Manager'
-                }
-            };
-        } catch (error) {
-            console.error('Error adding app by package:', error);
-            return { success: false, error: error.message };
-        }
-    }
-
-    getAppTypeFromExtension(extension) {
-        const typeMap = {
-            '.exe': 'Windows Application',
-            '.msi': 'Windows Installer',
-            '.app': 'Mac Application',
-            '.dmg': 'Mac Disk Image',
-            '.deb': 'Debian Package',
-            '.rpm': 'RPM Package',
-            '.desktop': 'Linux Desktop Entry',
-            '.sh': 'Shell Script',
-            '.bat': 'Batch File',
-            '.com': 'Command File'
+        const appName = packageName.trim();
+        const appType = this.categorizeApp(appName, 'Package Application');
+        return {
+            success: true,
+            app: {
+                name: appName,
+                type: appType,
+                executable: appName,
+                path: '',
+                publisher: 'Package Manager',
+                category: category
+            }
         };
-        
-        return typeMap[extension.toLowerCase()] || 'Application';
-    }
-
-    // Enhanced scanning for specific app types
-    async scanForOfficeApps() {
-        const officeApps = [
-            { name: 'Microsoft Word', type: 'Microsoft Office' },
-            { name: 'Microsoft Excel', type: 'Microsoft Office' },
-            { name: 'Microsoft PowerPoint', type: 'Microsoft Office' },
-            { name: 'Microsoft Outlook', type: 'Microsoft Office' },
-            { name: 'Microsoft OneNote', type: 'Microsoft Office' },
-            { name: 'Microsoft Teams', type: 'Microsoft Office' },
-            { name: 'LibreOffice Writer', type: 'Office Suite' },
-            { name: 'LibreOffice Calc', type: 'Office Suite' },
-            { name: 'LibreOffice Impress', type: 'Office Suite' },
-            { name: 'Google Docs', type: 'Web Application' },
-            { name: 'Google Sheets', type: 'Web Application' },
-            { name: 'Google Slides', type: 'Web Application' }
-        ];
-
-        return officeApps;
-    }
-
-    async scanForProductivityApps() {
-        const productivityApps = [
-            { name: 'Slack', type: 'Communication' },
-            { name: 'Discord', type: 'Communication' },
-            { name: 'Zoom', type: 'Video Conferencing' },
-            { name: 'Microsoft Teams', type: 'Collaboration' },
-            { name: 'Trello', type: 'Project Management' },
-            { name: 'Asana', type: 'Project Management' },
-            { name: 'Notion', type: 'Note Taking' },
-            { name: 'Evernote', type: 'Note Taking' },
-            { name: 'Todoist', type: 'Task Management' },
-            { name: 'Visual Studio Code', type: 'Development' },
-            { name: 'Sublime Text', type: 'Development' },
-            { name: 'Atom', type: 'Development' }
-        ];
-
-        return productivityApps;
     }
 }
 

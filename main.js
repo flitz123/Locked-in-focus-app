@@ -9,10 +9,10 @@ let appScanner;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
-        minWidth: 900,
-        minHeight: 600,
+        width: 1280,
+        height: 860,
+        minWidth: 950,
+        minHeight: 650,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
@@ -20,7 +20,8 @@ function createWindow() {
         },
         icon: path.join(__dirname, 'assets', 'icon.png'),
         title: 'Locked-In Focus App',
-        show: false
+        show: false,
+        backgroundColor: '#0f172a'
     });
 
     mainWindow.loadFile('index.html');
@@ -33,6 +34,29 @@ function createWindow() {
         mainWindow.focus();
     });
 
+    // Handle window close when session is active
+    mainWindow.on('close', async (e) => {
+        if (focusManager && focusManager.sessionActive) {
+            e.preventDefault();
+            const choice = dialog.showMessageBoxSync(mainWindow, {
+                type: 'question',
+                buttons: ['End Session & View Summary', 'Cancel'],
+                defaultId: 0,
+                cancelId: 1,
+                title: 'Active Focus Session',
+                message: 'A focus session is currently running. Do you want to end the session and view your summary before closing?'
+            });
+
+            if (choice === 0) {
+                await focusManager.stopSession();
+                // After session summary is generated and saved, close window
+                setTimeout(() => {
+                    mainWindow.destroy();
+                }, 500);
+            }
+        }
+    });
+
     mainWindow.on('closed', () => {
         mainWindow = null;
     });
@@ -42,18 +66,11 @@ function createWindow() {
     appScanner = new AppScanner();
     focusManager.setMainWindow(mainWindow);
 
-    // Load initial data and scan apps automatically
+    // Load initial data and scan apps
     focusManager.loadData().then(() => {
-        console.log('Focus manager data loaded');
-        // Auto-scan apps on startup
-        focusManager.getInstalledApps().then(result => {
-            if (result.success) {
-                console.log(`Auto-scanned ${result.apps.length} applications on startup`);
-            }
-        });
+        console.log('Focus manager data loaded successfully');
     });
 
-    // Setup IPC handlers
     setupIpcHandlers();
 }
 
@@ -71,10 +88,10 @@ function setupIpcHandlers() {
         return focusManager.getSessionStatus();
     });
 
-    // App scanning and detection
+    // App scanning & detection
     ipcMain.handle('scan-apps', async (event) => {
         try {
-            const result = await focusManager.getInstalledApps();
+            const result = await appScanner.scanForApps();
             return result;
         } catch (error) {
             console.error('Error scanning apps:', error);
@@ -84,13 +101,15 @@ function setupIpcHandlers() {
 
     ipcMain.handle('search-apps', async (event, query) => {
         try {
-            const result = await focusManager.getInstalledApps();
-            if (result.success) {
-                const filteredApps = result.apps.filter(app => 
-                    app.name.toLowerCase().includes(query.toLowerCase()) ||
-                    (app.type && app.type.toLowerCase().includes(query.toLowerCase()))
+            const result = await appScanner.scanForApps();
+            if (result.success && Array.isArray(result.apps)) {
+                const q = query.toLowerCase();
+                const filtered = result.apps.filter(app =>
+                    (app.name && app.name.toLowerCase().includes(q)) ||
+                    (app.type && app.type.toLowerCase().includes(q)) ||
+                    (app.publisher && app.publisher.toLowerCase().includes(q))
                 );
-                return filteredApps;
+                return filtered;
             }
             return [];
         } catch (error) {
@@ -98,9 +117,17 @@ function setupIpcHandlers() {
         }
     });
 
-    // App management
-    ipcMain.handle('add-app-manually', async (event, appName, category) => {
-        return await focusManager.addAppManually(appName, 'User Added', category);
+    // App lists & management
+    ipcMain.handle('get-app-lists', async (event) => {
+        return {
+            selectedApps: Array.from(focusManager.selectedApps),
+            allowedApps: Array.from(focusManager.allowedApps),
+            blockedApps: Array.from(focusManager.blockedApps)
+        };
+    });
+
+    ipcMain.handle('add-app-manually', async (event, appName, category = 'selected', appType = 'User Added') => {
+        return await focusManager.addAppManually(appName, appType, category);
     });
 
     ipcMain.handle('remove-app', async (event, appName) => {
@@ -108,19 +135,19 @@ function setupIpcHandlers() {
     });
 
     ipcMain.handle('get-installed-apps', async (event) => {
-        return await focusManager.getInstalledApps();
+        return await appScanner.scanForApps();
     });
 
     ipcMain.handle('get-session-stats', async (event) => {
         return focusManager.getSessionStats();
     });
 
-    // File operations
-    ipcMain.handle('add-app-from-file', async (event, filePath, category) => {
+    // File selection & upload
+    ipcMain.handle('add-app-from-file', async (event, filePath, category = 'selected') => {
         return await appScanner.addAppFromFile(filePath, category);
     });
 
-    ipcMain.handle('add-app-by-package', async (event, packageName, category) => {
+    ipcMain.handle('add-app-by-package', async (event, packageName, category = 'selected') => {
         return await appScanner.addAppByPackageName(packageName, category);
     });
 
@@ -142,82 +169,74 @@ function setupIpcHandlers() {
         return await focusManager.saveData();
     });
 
-    // File dialog
+    // Dialogs
     ipcMain.handle('show-open-dialog', async (event, options) => {
-        const result = await dialog.showOpenDialog(mainWindow, options);
-        return result;
+        return await dialog.showOpenDialog(mainWindow, options || {
+            title: 'Select Application File',
+            properties: ['openFile', 'multiSelections'],
+            filters: [
+                { name: 'Applications & Executables', extensions: ['exe', 'lnk', 'bat', 'cmd', 'app'] },
+                { name: 'All Files', extensions: ['*'] }
+            ]
+        });
     });
 
-    // Open external
+    ipcMain.handle('show-save-dialog', async (event, options) => {
+        return await dialog.showSaveDialog(mainWindow, options);
+    });
+
+    // External shell links
     ipcMain.handle('open-external', async (event, url) => {
         await shell.openExternal(url);
     });
 
-    // Get app lists
-    ipcMain.handle('get-app-lists', async (event) => {
-        return {
-            selectedApps: Array.from(focusManager.selectedApps),
-            allowedApps: Array.from(focusManager.allowedApps),
-            blockedApps: Array.from(focusManager.blockedApps)
-        };
-    });
-
-    // Get office apps
+    // Office & Business apps curated list
     ipcMain.handle('get-office-apps', async (event) => {
-        const officeApps = [
-            { name: 'Microsoft Word', type: 'Microsoft Office' },
-            { name: 'Microsoft Excel', type: 'Microsoft Office' },
-            { name: 'Microsoft PowerPoint', type: 'Microsoft Office' },
-            { name: 'Microsoft Outlook', type: 'Microsoft Office' },
-            { name: 'Microsoft OneNote', type: 'Microsoft Office' },
-            { name: 'Microsoft Teams', type: 'Microsoft Office' }
+        return [
+            { name: 'Microsoft Word', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft Excel', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft PowerPoint', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft Outlook', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft OneNote', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft Teams', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft Access', type: 'Microsoft Office & Business', publisher: 'Microsoft' },
+            { name: 'Microsoft 365 Copilot', type: 'Microsoft Office & Business', publisher: 'Microsoft' }
         ];
-        return officeApps;
     });
 
-    // Package manager - browse system for apps
+    // Package manager browse
     ipcMain.handle('browse-system-apps', async (event) => {
         try {
-            const result = await focusManager.getInstalledApps();
-            return result;
+            return await appScanner.scanForApps();
         } catch (error) {
             return { success: false, error: error.message, apps: [] };
         }
     });
 }
 
-// App event handlers
-app.whenReady().then(() => {
-    createWindow();
+// App lifecycle
+if (app && app.whenReady) {
+    app.whenReady().then(() => {
+        createWindow();
 
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-            createWindow();
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+            }
+        });
+    });
+
+    app.on('window-all-closed', () => {
+        if (process.platform !== 'darwin') {
+            app.quit();
         }
     });
-});
 
-app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
-        app.quit();
-    }
-});
-
-app.on('before-quit', async () => {
-    if (focusManager && focusManager.sessionActive) {
-        await focusManager.stopSession();
-    }
-});
-
-// Security: Prevent navigation to external URLs
-app.on('web-contents-created', (event, contents) => {
-    contents.on('will-navigate', (event, navigationUrl) => {
-        const parsedUrl = new URL(navigationUrl);
-        
-        if (parsedUrl.origin !== 'file://') {
-            event.preventDefault();
+    app.on('before-quit', async () => {
+        if (focusManager && focusManager.sessionActive) {
+            await focusManager.stopSession();
         }
     });
-});
+}
 
 module.exports = { focusManager, appScanner };

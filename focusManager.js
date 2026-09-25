@@ -1,8 +1,12 @@
 const { app, BrowserWindow, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
-const { exec } = require('child_process');
+const fsSync = require('fs');
+const { exec, spawn } = require('child_process');
 const util = require('util');
+const NativeWindows = require('./src/nativeWindows');
+const AppScanner = require('./appScanner');
+
 const execPromise = util.promisify(exec);
 
 class FocusManager {
@@ -16,43 +20,107 @@ class FocusManager {
         this.blockedApps = new Set();
         this.sessionStats = [];
         this.pendingApprovals = new Map();
-        this.dataPath = path.join(app.getPath('userData'), 'focus-app-data.json');
-        
-        // Enhanced session tracking
+        this.appScanner = new AppScanner();
+
+        // Path to persistent data
+        const userDataPath = app ? app.getPath('userData') : path.join(__dirname, 'data');
+        this.dataPath = path.join(userDataPath, 'focus-app-data.json');
+        this.fallbackDataPath = path.join(__dirname, 'data', 'appData.json');
+
+        // Live session metrics
         this.sessionStartTime = null;
         this.focusedTime = 0;
         this.distractedTime = 0;
         this.blockedAttempts = 0;
         this.lastWindowCheck = null;
         this.currentActiveApp = null;
-        this.distractionApps = new Map();
-        this.openedApps = new Set();
-        this.appUsageTime = new Map();
-        this.lastAppSwitchTime = null;
-        this.currentAppStartTime = null;
+        this.distractionApps = new Map(); // appName -> { timeSpent: number, attempts: number }
+        this.appUsageTime = new Map();     // appName -> number (seconds)
+        this.lastActiveAppName = null;
     }
 
     setMainWindow(window) {
         this.mainWindow = window;
     }
 
+    getAppName(appItem) {
+        if (!appItem) return '';
+        if (typeof appItem === 'string') return appItem;
+        return appItem.name || '';
+    }
+
+    normalizeName(name) {
+        if (!name) return '';
+        return name.toLowerCase().replace(/\.exe$/i, '').trim();
+    }
+
+    findAppInSet(set, appName) {
+        const target = this.normalizeName(appName);
+        if (!target) return null;
+        for (const item of set) {
+            const name = this.getAppName(item);
+            if (this.normalizeName(name) === target) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    isAppSelected(appName) {
+        return !!this.findAppInSet(this.selectedApps, appName);
+    }
+
+    isAppAllowed(appName) {
+        return !!this.findAppInSet(this.allowedApps, appName);
+    }
+
+    isAppBlocked(appName) {
+        return !!this.findAppInSet(this.blockedApps, appName);
+    }
+
     async loadData() {
         try {
-            const data = await fs.readFile(this.dataPath, 'utf8');
-            const parsed = JSON.parse(data);
-            
-            this.selectedApps = new Set(parsed.selectedApps || []);
-            this.allowedApps = new Set(parsed.allowedApps || []);
-            this.blockedApps = new Set(parsed.blockedApps || []);
-            this.sessionStats = parsed.sessionStats || [];
-            
-            console.log('Data loaded successfully');
+            let data = null;
+            if (fsSync.existsSync(this.dataPath)) {
+                const content = await fs.readFile(this.dataPath, 'utf8');
+                data = JSON.parse(content);
+            } else if (fsSync.existsSync(this.fallbackDataPath)) {
+                const content = await fs.readFile(this.fallbackDataPath, 'utf8');
+                data = JSON.parse(content);
+            }
+
+            if (data) {
+                this.selectedApps = new Set(this.parseAppList(data.selectedApps));
+                this.allowedApps = new Set(this.parseAppList(data.allowedApps));
+                this.blockedApps = new Set(this.parseAppList(data.blockedApps));
+                this.sessionStats = Array.isArray(data.sessionStats) ? data.sessionStats : [];
+            } else {
+                this.initializeDefaultData();
+            }
+
+            console.log(`FocusManager data loaded: ${this.selectedApps.size} selected, ${this.allowedApps.size} allowed, ${this.blockedApps.size} blocked, ${this.sessionStats.length} history items`);
             return { success: true };
         } catch (error) {
-            console.log('No existing data found, starting fresh');
+            console.error('Error loading data, initializing fresh:', error);
+            this.initializeDefaultData();
             await this.saveData();
             return { success: true };
         }
+    }
+
+    initializeDefaultData() {
+        this.selectedApps = new Set(['Word', 'Excel', 'Visual Studio Code', 'Notepad']);
+        this.allowedApps = new Set(['Calculator', 'OneNote']);
+        this.blockedApps = new Set(['Chrome', 'Discord', 'Spotify', 'Steam']);
+        this.sessionStats = [];
+    }
+
+    parseAppList(list) {
+        if (!Array.isArray(list)) return [];
+        return list.map(item => {
+            if (typeof item === 'string') return item;
+            return item.name || '';
+        }).filter(Boolean);
     }
 
     async saveData() {
@@ -63,9 +131,13 @@ class FocusManager {
                 blockedApps: Array.from(this.blockedApps),
                 sessionStats: this.sessionStats
             };
-            
-            await fs.writeFile(this.dataPath, JSON.stringify(data, null, 2));
-            console.log('Data saved successfully');
+
+            const dir = path.dirname(this.dataPath);
+            if (!fsSync.existsSync(dir)) {
+                fsSync.mkdirSync(dir, { recursive: true });
+            }
+
+            await fs.writeFile(this.dataPath, JSON.stringify(data, null, 2), 'utf8');
             return { success: true };
         } catch (error) {
             console.error('Error saving data:', error);
@@ -73,13 +145,13 @@ class FocusManager {
         }
     }
 
-    async startSession(settings) {
+    async startSession(settings = {}) {
         if (this.sessionActive) {
-            return { success: false, error: 'Session already active' };
+            return { success: false, error: 'Session is already active' };
         }
 
         if (this.selectedApps.size === 0) {
-            return { success: false, error: 'No selected applications' };
+            return { success: false, error: 'Please select at least one application before starting the focus session' };
         }
 
         try {
@@ -90,41 +162,48 @@ class FocusManager {
             this.blockedAttempts = 0;
             this.lastWindowCheck = Date.now();
             this.distractionApps.clear();
-            this.openedApps.clear();
             this.appUsageTime.clear();
-            this.lastAppSwitchTime = Date.now();
-            this.currentAppStartTime = Date.now();
+            this.currentActiveApp = null;
+            this.lastActiveAppName = null;
 
             this.currentSession = {
                 id: Date.now().toString(),
-                name: settings.name,
+                name: settings.name || 'Focus Session',
                 startTime: this.sessionStartTime,
                 settings: settings,
                 selectedApps: Array.from(this.selectedApps),
+                allowedApps: Array.from(this.allowedApps),
                 blockedApps: Array.from(this.blockedApps)
             };
 
-            // Bring selected apps to foreground and ensure they're open
+            // 1. Bring selected and allowed apps to foreground
             await this.bringSelectedAppsToForeground();
 
-            // Close any blocked apps that might be running
+            // 2. Push Locked-In App window to background / minimize
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                this.mainWindow.minimize();
+            }
+
+            // 3. Immediately close any running blocked apps
             await this.closeBlockedApps();
 
-            // Start monitoring
-            this.startWindowMonitoring(settings.checkInterval || 2000);
+            // 4. Start active window & process monitoring loop
+            const checkInterval = Math.max(1000, parseInt(settings.checkInterval) || 1500);
+            this.startMonitoringLoop(checkInterval);
 
-            // Notify renderer
-            if (this.mainWindow) {
-                this.mainWindow.webContents.send('session-update', { 
+            // 5. Notify renderer
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                this.mainWindow.webContents.send('session-update', {
                     active: true,
-                    session: this.currentSession 
+                    session: this.currentSession
                 });
             }
 
-            return { 
-                success: true, 
+            return {
+                success: true,
                 sessionId: this.currentSession.id,
-                message: 'Session started successfully'
+                session: this.currentSession,
+                message: 'Focus session started successfully'
             };
         } catch (error) {
             console.error('Error starting session:', error);
@@ -135,67 +214,80 @@ class FocusManager {
 
     async stopSession() {
         if (!this.sessionActive) {
-            return { success: false, error: 'No active session' };
+            return { success: false, error: 'No active session to stop' };
         }
 
         try {
             this.sessionActive = false;
-            clearInterval(this.sessionInterval);
+            if (this.sessionInterval) {
+                clearInterval(this.sessionInterval);
+                this.sessionInterval = null;
+            }
 
             const sessionEndTime = Date.now();
-            const totalDuration = (sessionEndTime - this.sessionStartTime) / 1000;
-            
-            // Calculate final time for current app
-            this.trackAppUsageTime();
+            const totalDuration = Math.max(1, Math.round((sessionEndTime - this.sessionStartTime) / 1000));
+            const focusedTimeSec = Math.round(this.focusedTime);
+            const distractedTimeSec = Math.round(this.distractedTime);
 
-            // Calculate productivity score
-            const productivity = totalDuration > 0 ? 
-                Math.round((this.focusedTime / totalDuration) * 100) : 0;
+            // Compute productivity percentage
+            const totalTracked = focusedTimeSec + distractedTimeSec;
+            const productivity = totalTracked > 0
+                ? Math.min(100, Math.round((focusedTimeSec / totalTracked) * 100))
+                : 100;
 
-            // Calculate distraction app times
-            const distractionDetails = Array.from(this.distractionApps.entries()).map(([appName, time]) => ({
+            // Distraction details breakdown
+            const distractionDetails = Array.from(this.distractionApps.entries()).map(([appName, data]) => ({
                 appName,
-                timeSpent: time,
-                attempts: this.getAppAttempts(appName)
-            }));
+                timeSpent: Math.round(data.timeSpent || 0),
+                attempts: data.attempts || 1
+            })).sort((a, b) => b.timeSpent - a.timeSpent);
+
+            // App usage breakdown
+            const appUsageBreakdown = Array.from(this.appUsageTime.entries()).map(([appName, time]) => ({
+                appName,
+                timeSpent: Math.round(time || 0)
+            })).sort((a, b) => b.timeSpent - a.timeSpent);
 
             const sessionSummary = {
-                sessionId: this.currentSession.id,
-                sessionName: this.currentSession.name,
+                sessionId: this.currentSession ? this.currentSession.id : Date.now().toString(),
+                sessionName: this.currentSession ? this.currentSession.name : 'Focus Session',
                 startTime: this.sessionStartTime,
                 endTime: sessionEndTime,
                 totalDuration: totalDuration,
-                focusedTime: this.focusedTime,
-                distractedTime: this.distractedTime,
+                focusedTime: focusedTimeSec,
+                distractedTime: distractedTimeSec,
                 blockedAttempts: this.blockedAttempts,
                 productivity: productivity,
                 selectedApps: Array.from(this.selectedApps),
+                allowedApps: Array.from(this.allowedApps),
                 blockedApps: Array.from(this.blockedApps),
                 distractionDetails: distractionDetails,
-                appUsageBreakdown: Array.from(this.appUsageTime.entries()).map(([appName, time]) => ({
-                    appName,
-                    timeSpent: time
-                }))
+                appUsageBreakdown: appUsageBreakdown
             };
 
-            // Save to session history
-            this.sessionStats.push(sessionSummary);
+            // Save to session history (latest first)
+            this.sessionStats.unshift(sessionSummary);
             await this.saveData();
 
-            // Reset session data
-            this.currentSession = null;
-            this.sessionStartTime = null;
+            // Restore the main window so the user sees the summary
+            if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                if (this.mainWindow.isMinimized()) {
+                    this.mainWindow.restore();
+                }
+                this.mainWindow.show();
+                this.mainWindow.focus();
 
-            // Notify renderer
-            if (this.mainWindow) {
-                this.mainWindow.webContents.send('session-update', { active: false });
+                this.mainWindow.webContents.send('session-update', { active: false, session: null });
                 this.mainWindow.webContents.send('session-summary', sessionSummary);
             }
 
-            return { 
-                success: true, 
+            this.currentSession = null;
+            this.sessionStartTime = null;
+
+            return {
+                success: true,
                 summary: sessionSummary,
-                message: 'Session stopped successfully'
+                message: 'Session ended successfully'
             };
         } catch (error) {
             console.error('Error stopping session:', error);
@@ -203,361 +295,247 @@ class FocusManager {
         }
     }
 
-    startWindowMonitoring(checkInterval = 2000) {
+    startMonitoringLoop(intervalMs = 1500) {
+        if (this.sessionInterval) {
+            clearInterval(this.sessionInterval);
+        }
+
         this.sessionInterval = setInterval(async () => {
             if (!this.sessionActive) return;
 
             try {
+                const now = Date.now();
+                const deltaSeconds = this.lastWindowCheck ? (now - this.lastWindowCheck) / 1000 : intervalMs / 1000;
+                this.lastWindowCheck = now;
+
+                // 1. Detect current active application
                 const activeApp = await this.getActiveApplication();
-                const currentTime = Date.now();
-                const timeDiff = this.lastWindowCheck ? (currentTime - this.lastWindowCheck) / 1000 : 0;
+                const activeName = activeApp ? (activeApp.name || activeApp.title || 'Unknown') : 'Selected Application';
 
-                if (activeApp) {
-                    const appName = activeApp.name;
-                    
+                const isSelf = /electron|locked-in/i.test(activeName);
+                const isSelected = this.isAppSelected(activeName);
+                const isAllowed = this.isAppAllowed(activeName);
+                const isBlocked = this.isAppBlocked(activeName);
+
+                if (isSelected || isAllowed || isSelf) {
+                    // USER IS FOCUSED ON ALLOWED/SELECTED APP
+                    this.focusedTime += deltaSeconds;
+                    const displayName = isSelf ? (Array.from(this.selectedApps)[0] || 'Focus App') : activeName;
+                    this.currentActiveApp = displayName;
+
                     // Track app usage time
-                    this.trackAppUsageTime();
-                    this.currentActiveApp = appName;
-                    this.currentAppStartTime = currentTime;
+                    const currentUsage = this.appUsageTime.get(displayName) || 0;
+                    this.appUsageTime.set(displayName, currentUsage + deltaSeconds);
 
-                    // Check if this is a selected, allowed, or blocked app
-                    if (this.isAppSelected(appName) || this.isAppAllowed(appName)) {
-                        this.focusedTime += timeDiff;
-                        
-                        // Send focus update to renderer
-                        if (this.mainWindow) {
-                            this.mainWindow.webContents.send('focus-update', {
-                                app: appName,
-                                status: 'focused',
-                                focusedTime: this.focusedTime,
-                                distractedTime: this.distractedTime,
-                                blockedAttempts: this.blockedAttempts
-                            });
-                        }
-                    } else {
-                        this.distractedTime += timeDiff;
+                    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                        this.mainWindow.webContents.send('focus-update', {
+                            app: displayName,
+                            status: 'focused',
+                            focusedTime: Math.round(this.focusedTime),
+                            distractedTime: Math.round(this.distractedTime),
+                            blockedAttempts: this.blockedAttempts
+                        });
+                    }
+                } else {
+                    // USER SWITCHED TO BLOCKED OR UNAUTHORIZED APP
+                    this.distractedTime += deltaSeconds;
+                    this.currentActiveApp = activeName;
+
+                    // Record attempt if changed app
+                    if (this.lastActiveAppName !== activeName) {
                         this.blockedAttempts++;
-                        
-                        // Track time spent on this distraction app
-                        if (!this.distractionApps.has(appName)) {
-                            this.distractionApps.set(appName, 0);
-                        }
-                        this.distractionApps.set(appName, this.distractionApps.get(appName) + timeDiff);
-                        
-                        // Show approval dialog for blocked/unknown app
-                        if (this.isAppBlocked(appName)) {
-                            await this.handleBlockedApp(appName);
-                        } else {
-                            await this.handleUnknownApp(appName);
-                        }
-                        
-                        // Send distraction update to renderer
-                        if (this.mainWindow) {
-                            this.mainWindow.webContents.send('focus-update', {
-                                app: appName,
-                                status: this.isAppBlocked(appName) ? 'blocked' : 'unknown',
-                                focusedTime: this.focusedTime,
-                                distractedTime: this.distractedTime,
-                                blockedAttempts: this.blockedAttempts
-                            });
-                        }
+                    }
+
+                    // Track distraction time & attempts for this specific app
+                    const distData = this.distractionApps.get(activeName) || { timeSpent: 0, attempts: 0 };
+                    distData.timeSpent += deltaSeconds;
+                    if (this.lastActiveAppName !== activeName) {
+                        distData.attempts += 1;
+                    }
+                    this.distractionApps.set(activeName, distData);
+
+                    // Aggressive Safe Browser Enforcement:
+                    // If blocked or unauthorized, close it and bring selected app to front!
+                    if (isBlocked) {
+                        console.log(`[Aggressive Block] Terminating blocked app: ${activeName}`);
+                        await NativeWindows.killProcess(activeName);
+                        await this.bringSelectedAppsToForeground();
+                    } else {
+                        // Non-selected app: minimize it or bring selected app back to front
+                        console.log(`[Focus Lock] User navigated to unauthorized app: ${activeName}`);
+                        await this.bringSelectedAppsToForeground();
+                    }
+
+                    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+                        this.mainWindow.webContents.send('focus-update', {
+                            app: activeName,
+                            status: isBlocked ? 'blocked' : 'distracted',
+                            focusedTime: Math.round(this.focusedTime),
+                            distractedTime: Math.round(this.distractedTime),
+                            blockedAttempts: this.blockedAttempts
+                        });
                     }
                 }
 
-                this.lastWindowCheck = currentTime;
+                this.lastActiveAppName = activeName;
 
-                // Ensure selected apps are running and blocked apps are closed
+                // 2. Ensure all selected apps remain open
                 await this.ensureSelectedAppsRunning();
+
+                // 3. Continuously enforce closing of any blocked app processes
                 await this.closeBlockedApps();
-                
-            } catch (error) {
-                console.error('Error monitoring windows:', error);
+
+            } catch (err) {
+                console.error('Error during monitoring tick:', err);
             }
-        }, checkInterval);
+        }, intervalMs);
     }
 
     async getActiveApplication() {
         try {
-            if (process.platform === 'win32') {
-                const { stdout } = await execPromise('powershell "Get-Process | Where-Object {$_.MainWindowTitle -ne \"\"} | Select-Object Name, MainWindowTitle | ConvertTo-Json"');
-                const processes = JSON.parse(stdout);
-                if (Array.isArray(processes) && processes.length > 0) {
-                    return { name: processes[0].Name.replace('.exe', '') };
-                }
-            } else if (process.platform === 'darwin') {
-                const { stdout } = await execPromise('osascript -e \'tell application "System Events" to get name of first application process whose frontmost is true\'');
-                return { name: stdout.trim() };
-            } else if (process.platform === 'linux') {
-                const { stdout } = await execPromise('xprop -root _NET_ACTIVE_WINDOW | cut -d " " -f 5 | xargs -I {} xprop -id {} WM_CLASS | cut -d " " -f 3');
-                return { name: stdout.replace(/"/g, '').trim() };
+            const fg = await NativeWindows.getForegroundWindow();
+            if (fg && fg.name) {
+                return fg;
             }
-        } catch (error) {
-            console.error('Error getting active application:', error);
+        } catch (e) {}
+
+        // Fallback: detect via running processes with window title
+        if (process.platform === 'win32') {
+            try {
+                const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowTitle -ne \"\"} | Select-Object -First 1 ProcessName, MainWindowTitle | ConvertTo-Json"', { timeout: 2000 });
+                if (stdout && stdout.trim()) {
+                    const parsed = JSON.parse(stdout.trim());
+                    return { name: parsed.ProcessName, title: parsed.MainWindowTitle };
+                }
+            } catch (e) {}
         }
         return null;
     }
 
-    trackAppUsageTime() {
-        if (this.currentActiveApp && this.currentAppStartTime) {
-            const currentTime = Date.now();
-            const timeDiff = (currentTime - this.currentAppStartTime) / 1000;
-            
-            if (!this.appUsageTime.has(this.currentActiveApp)) {
-                this.appUsageTime.set(this.currentActiveApp, 0);
+    async bringSelectedAppsToForeground() {
+        const appsToFocus = [...Array.from(this.selectedApps), ...Array.from(this.allowedApps)];
+        for (const appName of appsToFocus) {
+            try {
+                const running = await NativeWindows.isProcessRunning(appName);
+                if (running) {
+                    await NativeWindows.activateApp(appName);
+                } else {
+                    await this.openApp(appName);
+                }
+            } catch (e) {
+                console.warn(`Could not bring app ${appName} to foreground:`, e.message);
             }
-            this.appUsageTime.set(this.currentActiveApp, this.appUsageTime.get(this.currentActiveApp) + timeDiff);
-            
-            this.currentAppStartTime = currentTime;
         }
     }
 
-    getAppAttempts(appName) {
-        // This would track individual app attempt counts - simplified for now
-        return 1;
-    }
-
     async ensureSelectedAppsRunning() {
-        try {
-            for (const appName of this.selectedApps) {
-                if (!this.openedApps.has(appName)) {
-                    console.log(`Opening selected app: ${appName}`);
-                    const result = await this.openApp(appName);
-                    if (result.success) {
-                        this.openedApps.add(appName);
-                        // Small delay between opening apps
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                    }
+        for (const appName of this.selectedApps) {
+            try {
+                const isRunning = await NativeWindows.isProcessRunning(appName);
+                if (!isRunning) {
+                    console.log(`[Auto-Recovery] Selected app "${appName}" was closed. Relaunching...`);
+                    await this.openApp(appName);
                 }
+            } catch (e) {
+                // Ignore process check error
             }
-        } catch (error) {
-            console.error('Error ensuring selected apps are running:', error);
         }
     }
 
     async closeBlockedApps() {
-        try {
-            for (const appName of this.blockedApps) {
-                console.log(`Checking and closing blocked app: ${appName}`);
-                await this.closeApp(appName);
-            }
-        } catch (error) {
-            console.error('Error closing blocked apps:', error);
-        }
-    }
-
-    isAppSelected(appName) {
-        return this.selectedApps.has(appName);
-    }
-
-    isAppAllowed(appName) {
-        return this.allowedApps.has(appName);
-    }
-
-    isAppBlocked(appName) {
-        return this.blockedApps.has(appName);
-    }
-
-    async handleBlockedApp(appName) {
-        const requestId = Date.now().toString();
-        
-        this.pendingApprovals.set(requestId, {
-            appName: appName,
-            type: 'blocked',
-            timestamp: Date.now()
-        });
-
-        // Show approval dialog in renderer
-        if (this.mainWindow) {
-            this.mainWindow.webContents.send('app-approval-request', {
-                requestId: requestId,
-                appName: appName,
-                type: 'blocked',
-                message: `"${appName}" is a blocked application. Opening it may ruin your productivity. Do you want to proceed?`
-            });
-        }
-    }
-
-    async handleUnknownApp(appName) {
-        const requestId = Date.now().toString();
-        
-        this.pendingApprovals.set(requestId, {
-            appName: appName,
-            type: 'unknown',
-            timestamp: Date.now()
-        });
-
-        // Show approval dialog in renderer
-        if (this.mainWindow) {
-            this.mainWindow.webContents.send('app-approval-request', {
-                requestId: requestId,
-                appName: appName,
-                type: 'unknown',
-                message: `"${appName}" is not in your selected applications. Do you want to open it as a background app?`
-            });
-        }
-    }
-
-    async handleAppApprovalResponse(requestId, approved) {
-        const request = this.pendingApprovals.get(requestId);
-        if (!request) {
-            return { success: false, error: 'Request not found' };
-        }
-
-        this.pendingApprovals.delete(requestId);
-
-        if (approved) {
-            // User approved - allow the app temporarily
-            if (request.type === 'unknown') {
-                this.allowedApps.add(request.appName);
-                await this.saveData();
-            }
-            return { success: true, allowed: true };
-        } else {
-            // User denied - try to close the app
-            await this.closeApp(request.appName);
-            return { success: true, allowed: false };
-        }
-    }
-
-    async bringSelectedAppsToForeground() {
-        console.log('Bringing selected apps to foreground:', Array.from(this.selectedApps));
-        
-        for (const appName of this.selectedApps) {
+        for (const appName of this.blockedApps) {
             try {
-                await this.openApp(appName);
-                this.openedApps.add(appName);
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (error) {
-                console.warn(`Could not open app ${appName}:`, error.message);
-            }
+                const isRunning = await NativeWindows.isProcessRunning(appName);
+                if (isRunning) {
+                    console.log(`[Safe-Lock] Closing blocked app: ${appName}`);
+                    await NativeWindows.killProcess(appName);
+                }
+            } catch (e) {}
         }
+    }
+
+    async openApp(appNameOrPath) {
+        return await NativeWindows.launchApp(appNameOrPath);
     }
 
     async closeApp(appName) {
-        console.log(`Attempting to close app: ${appName}`);
-        
-        try {
-            if (process.platform === 'win32') {
-                await execPromise(`taskkill /IM "${appName}.exe" /F`).catch(() => {});
-                await execPromise(`taskkill /IM "${appName}" /F`).catch(() => {});
-                // Also try with common extensions
-                await execPromise(`taskkill /IM "${appName}.exe" /F`).catch(() => {});
-                await execPromise(`taskkill /IM "${appName}.com" /F`).catch(() => {});
-                await execPromise(`taskkill /IM "${appName}.bat" /F`).catch(() => {});
-            } else if (process.platform === 'darwin') {
-                await execPromise(`pkill -f "${appName}"`).catch(() => {});
-                await execPromise(`killall "${appName}"`).catch(() => {});
-            } else if (process.platform === 'linux') {
-                await execPromise(`pkill -f "${appName}"`).catch(() => {});
-                await execPromise(`killall "${appName}"`).catch(() => {});
-            }
-            return { success: true };
-        } catch (error) {
-            console.warn(`Could not close app ${appName}:`, error.message);
-            return { success: false, error: error.message };
-        }
+        return await NativeWindows.killProcess(appName);
     }
 
-    async openApp(appName) {
-        console.log(`Opening app: ${appName}`);
-        
-        try {
-            // Try to find the app using system commands first
-            if (process.platform === 'win32') {
-                await execPromise(`start "" "${appName}"`).catch(() => {});
-                // Try different ways to open the app
-                await execPromise(`"${appName}"`).catch(() => {});
-            } else if (process.platform === 'darwin') {
-                await execPromise(`open -a "${appName}"`).catch(() => {});
-                await execPromise(`open "${appName}"`).catch(() => {});
-            } else {
-                await execPromise(`${appName}`).catch(() => {});
-                await execPromise(`./${appName}`).catch(() => {});
-            }
-            
-            return { success: true };
-        } catch (error) {
-            console.error(`Error opening app ${appName}:`, error);
-            return { success: false, error: error.message };
-        }
-    }
-
-    // App management methods
+    // Management methods
     async addAppManually(appName, appType = 'User Added', category = 'selected') {
         try {
+            const cleanName = appName.trim();
+            if (!cleanName) return { success: false, error: 'App name cannot be empty' };
+
+            // Remove from other categories first to avoid collision
+            this.selectedApps.delete(cleanName);
+            this.allowedApps.delete(cleanName);
+            this.blockedApps.delete(cleanName);
+
             if (category === 'selected') {
-                this.selectedApps.add(appName);
+                this.selectedApps.add(cleanName);
             } else if (category === 'allowed') {
-                this.allowedApps.add(appName);
+                this.allowedApps.add(cleanName);
             } else if (category === 'blocked') {
-                this.blockedApps.add(appName);
+                this.blockedApps.add(cleanName);
             }
 
             await this.saveData();
-            return { success: true, app: { name: appName, type: appType } };
+            return {
+                success: true,
+                app: { name: cleanName, type: appType, category }
+            };
         } catch (error) {
-            console.error('Error adding manual app:', error);
+            console.error('Error adding app manually:', error);
             return { success: false, error: error.message };
         }
     }
 
     async removeApp(appName) {
         try {
+            const clean = appName.trim();
             let removed = false;
 
-            if (this.selectedApps.has(appName)) {
-                this.selectedApps.delete(appName);
+            if (this.selectedApps.has(clean)) {
+                this.selectedApps.delete(clean);
                 removed = true;
             }
-            if (this.allowedApps.has(appName)) {
-                this.allowedApps.delete(appName);
+            if (this.allowedApps.has(clean)) {
+                this.allowedApps.delete(clean);
                 removed = true;
             }
-            if (this.blockedApps.has(appName)) {
-                this.blockedApps.delete(appName);
+            if (this.blockedApps.has(clean)) {
+                this.blockedApps.delete(clean);
                 removed = true;
             }
 
             if (removed) {
                 await this.saveData();
                 return { success: true };
-            } else {
-                return { success: false, error: 'App not found' };
             }
+            return { success: false, error: 'Application not found in any list' };
         } catch (error) {
-            console.error('Error removing app:', error);
             return { success: false, error: error.message };
         }
     }
 
     async getInstalledApps() {
-        try {
-            const AppScanner = require('./appScanner');
-            const scanner = new AppScanner();
-            const result = await scanner.scanForApps();
-            
-            if (result.success) {
-                return { 
-                    success: true, 
-                    apps: result.apps.map(app => ({ 
-                        name: app.name, 
-                        type: app.type || 'Installed Application',
-                        path: app.path || '',
-                        executable: app.executable || '',
-                        publisher: app.publisher || 'Unknown'
-                    }))
-                };
-            } else {
-                throw new Error(result.error);
-            }
-        } catch (error) {
-            console.error('Error getting installed apps:', error);
-            return { success: false, error: error.message };
-        }
+        return await this.appScanner.scanForApps();
     }
 
     getSessionStats() {
         return this.sessionStats;
+    }
+
+    getSessionStatus() {
+        return {
+            active: this.sessionActive,
+            session: this.currentSession,
+            focusedTime: Math.round(this.focusedTime),
+            distractedTime: Math.round(this.distractedTime),
+            blockedAttempts: this.blockedAttempts
+        };
     }
 
     async clearAllData() {
@@ -569,17 +547,23 @@ class FocusManager {
             await this.saveData();
             return { success: true };
         } catch (error) {
-            console.error('Error clearing data:', error);
             return { success: false, error: error.message };
         }
     }
 
-    // Utility methods
-    getSessionStatus() {
-        return {
-            active: this.sessionActive,
-            session: this.currentSession
-        };
+    async handleAppApprovalResponse(requestId, approved) {
+        const req = this.pendingApprovals.get(requestId);
+        if (!req) return { success: false, error: 'Approval request expired' };
+        this.pendingApprovals.delete(requestId);
+
+        if (approved) {
+            this.allowedApps.add(req.appName);
+            await this.saveData();
+            return { success: true, allowed: true };
+        } else {
+            await this.closeApp(req.appName);
+            return { success: true, allowed: false };
+        }
     }
 }
 
