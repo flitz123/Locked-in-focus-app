@@ -10,12 +10,13 @@ const execFilePromise = util.promisify(execFile);
 class AppScanner {
     constructor() {
         this.detectedApps = [];
+        this.appPathCache = new Map();
         this.categories = {
             office: ['Word', 'Excel', 'PowerPoint', 'Outlook', 'OneNote', 'Teams', 'Access', 'Publisher', 'Visio', 'Project', '365', 'Office'],
-            productivity: ['Code', 'Visual Studio', 'Notion', 'Obsidian', 'Slack', 'Discord', 'Zoom', 'Trello', 'Asana', 'Figma', 'Todoist', 'Evernote', 'Git', 'Sublime', 'PyCharm', 'IntelliJ', 'WebStorm', 'Postman', 'Docker', 'Terminal', 'PowerShell'],
-            pwa: ['PWA', 'Chrome App', 'Edge App', 'Web App', 'Google Docs', 'Google Sheets', 'Google Slides', 'Canva', 'WhatsApp Web', 'Telegram Web', 'YouTube Music', 'Linear'],
+            productivity: ['Code', 'Visual Studio', 'Notion', 'Obsidian', 'Slack', 'Discord', 'Zoom', 'Trello', 'Asana', 'Figma', 'Todoist', 'Evernote', 'Git', 'Sublime', 'PyCharm', 'IntelliJ', 'WebStorm', 'Postman', 'Docker', 'Terminal', 'PowerShell', 'Notepad', 'Calculator'],
+            pwa: ['PWA', 'Chrome App', 'Edge App', 'Web App', 'Google Docs', 'Google Sheets', 'Google Slides', 'Canva', 'WhatsApp', 'Telegram', 'YouTube Music', 'Linear'],
             browsers: ['Chrome', 'Edge', 'Firefox', 'Brave', 'Opera', 'Vivaldi', 'Safari', 'Chromium', 'Tor Browser'],
-            media: ['Spotify', 'VLC', 'Photoshop', 'Illustrator', 'Premiere', 'After Effects', 'Blender', 'Audacity', 'Steam', 'Epic Games', 'GIMP']
+            media: ['Spotify', 'VLC', 'Photoshop', 'Illustrator', 'Premiere', 'After Effects', 'Blender', 'Audacity', 'Steam', 'Epic Games', 'GIMP', 'Paint']
         };
     }
 
@@ -32,23 +33,21 @@ class AppScanner {
                 apps = await this.scanLinuxApps();
             }
 
-            // Also add standard common & office apps to ensure comprehensive coverage
-            const curatedApps = this.getCuratedApps();
-            for (const item of curatedApps) {
-                if (!apps.some(a => a.name.toLowerCase() === item.name.toLowerCase())) {
-                    apps.push(item);
-                }
-            }
-
             // Remove duplicates and sort alphabetically
             apps = this.removeDuplicates(apps);
             apps.sort((a, b) => a.name.localeCompare(b.name));
 
             this.detectedApps = apps;
-            return { success: true, apps: apps };
+            for (const app of apps) {
+                if (app.executable || app.path) {
+                    this.appPathCache.set(app.name.toLowerCase(), app.executable || app.path);
+                }
+            }
+
+            return { success: true, count: apps.length, apps: apps };
         } catch (error) {
             console.error('Error scanning for apps:', error);
-            return { success: false, error: error.message, apps: this.getCuratedApps() };
+            return { success: false, error: error.message, apps: this.detectedApps || [] };
         }
     }
 
@@ -58,11 +57,11 @@ class AppScanner {
 
         const addApp = (name, type, executable = '', appPath = '', publisher = '') => {
             if (!name || typeof name !== 'string') return;
-            const cleanName = name.trim();
+            const cleanName = this.cleanAppName(name);
             if (!cleanName || cleanName.length < 2) return;
             
-            // Filter out system updates, drivers, and junk
-            if (/^(KB\d+|Security Update|Hotfix|Update for |Windows Software Development Kit|Microsoft Visual C\+\+ 20\d\d Redistributable|Microsoft .NET Framework)/i.test(cleanName)) {
+            // Filter out system updates, drivers, runtimes, and junk
+            if (/^(KB\d+|Security Update|Hotfix|Update for |Windows Software Development Kit|Microsoft Visual C\+\+ 20\d\d|Microsoft .NET Framework|DirectX|NVIDIA|Intel\(R\)|AMD|Realtek|Synaptics)/i.test(cleanName)) {
                 return;
             }
 
@@ -74,13 +73,19 @@ class AppScanner {
             apps.push({
                 name: cleanName,
                 type: category,
-                executable: executable || cleanName,
-                path: appPath || '',
-                publisher: publisher || 'Unknown'
+                executable: executable || '',
+                path: appPath || executable || '',
+                publisher: publisher || 'Installed Application'
             });
         };
 
-        // 1. Scan Start Menu Shortcuts (User and All Users)
+        // 1. Scan Microsoft Office Applications (Check real disk paths)
+        await this.scanWindowsOffice(addApp);
+
+        // 2. Scan Common Built-in Windows Apps (Only if verified on disk)
+        this.scanWindowsBuiltins(addApp);
+
+        // 3. Scan Start Menu Shortcuts (User and All Users)
         try {
             const startMenuPaths = [
                 path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
@@ -96,7 +101,7 @@ class AppScanner {
             console.warn('Start menu scan warning:', e.message);
         }
 
-        // 2. Scan Registry Uninstall Keys (64-bit, 32-bit, HKCU User)
+        // 4. Scan Registry Uninstall Keys (64-bit, 32-bit, HKCU User)
         const registryKeys = [
             'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
             'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
@@ -125,14 +130,19 @@ class AppScanner {
                     } else if (trimmed.startsWith('DisplayIcon')) {
                         const match = trimmed.match(/DisplayIcon\s+REG_SZ\s+(.+)/i);
                         if (match) {
-                            const iconPath = match[1].split(',')[0].trim().replace(/^"|"$/g, '');
-                            if (iconPath.toLowerCase().endsWith('.exe')) {
-                                currentApp.exe = iconPath;
+                            const rawIcon = match[1].split(',')[0].trim().replace(/^"|"$/g, '');
+                            if (rawIcon.toLowerCase().endsWith('.exe') && fsSync.existsSync(rawIcon)) {
+                                currentApp.exe = rawIcon;
                             }
                         }
                     } else if (trimmed.startsWith('InstallLocation')) {
                         const match = trimmed.match(/InstallLocation\s+REG_SZ\s+(.+)/i);
-                        if (match) currentApp.path = match[1].trim();
+                        if (match) {
+                            const loc = match[1].trim().replace(/^"|"$/g, '');
+                            if (fsSync.existsSync(loc)) {
+                                currentApp.path = loc;
+                            }
+                        }
                     } else if (trimmed.startsWith('SystemComponent')) {
                         const match = trimmed.match(/SystemComponent\s+REG_DWORD\s+0x1/i);
                         if (match) currentApp.systemComponent = true;
@@ -144,11 +154,11 @@ class AppScanner {
                     addApp(currentApp.name, 'Installed Application', currentApp.exe, currentApp.path, currentApp.publisher);
                 }
             } catch (err) {
-                // Registry key might not exist or had read timeout
+                // Ignore key query errors
             }
         }
 
-        // 3. Scan Chrome & Edge Progressive Web Apps (PWAs)
+        // 5. Scan Chrome & Edge Progressive Web Apps (PWAs)
         try {
             const pwaDirs = [
                 path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Chrome Apps'),
@@ -160,7 +170,8 @@ class AppScanner {
                     for (const entry of entries) {
                         if (entry.toLowerCase().endsWith('.lnk')) {
                             const name = path.basename(entry, path.extname(entry));
-                            addApp(name, 'Progressive Web App (PWA)', '', pwaDir, 'PWA');
+                            const lnkPath = path.join(pwaDir, entry);
+                            addApp(name, 'Progressive Web App (PWA)', lnkPath, pwaDir, 'PWA');
                         }
                     }
                 }
@@ -169,17 +180,19 @@ class AppScanner {
             // Ignore PWA read error
         }
 
-        // 4. Scan Currently Running Processes with Main Window
+        // 6. Scan Currently Running Processes with Interactive Windows
         try {
-            const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -Unique ProcessName, MainWindowTitle | ConvertTo-Json"', { timeout: 3000 });
+            const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -Unique ProcessName, MainWindowTitle, Path | ConvertTo-Json -Compress"', { timeout: 3000 });
             if (stdout && stdout.trim()) {
                 const procs = JSON.parse(stdout.trim());
                 const procList = Array.isArray(procs) ? procs : [procs];
                 for (const p of procList) {
                     if (p && p.ProcessName) {
                         const name = p.ProcessName;
-                        if (!['electron', 'locked-in', 'explorer', 'shellexperiencehost', 'searchapp', 'systemsettings'].includes(name.toLowerCase())) {
-                            addApp(name, 'Running Application', `${name}.exe`, '', 'System');
+                        if (!['electron', 'locked-in', 'explorer', 'shellexperiencehost', 'searchapp', 'systemsettings', 'taskhostw', 'applicationframehost'].includes(name.toLowerCase())) {
+                            const titleName = p.MainWindowTitle ? p.MainWindowTitle.split(' - ').pop().trim() : '';
+                            const displayName = titleName && titleName.length > 2 && titleName.length < 30 ? titleName : name;
+                            addApp(displayName, 'Running Application', p.Path || `${name}.exe`, '', 'Active Application');
                         }
                     }
                 }
@@ -191,6 +204,58 @@ class AppScanner {
         return apps;
     }
 
+    async scanWindowsOffice(addApp) {
+        const officeApps = [
+            { name: 'Microsoft Word', exe: 'WINWORD.EXE' },
+            { name: 'Microsoft Excel', exe: 'EXCEL.EXE' },
+            { name: 'Microsoft PowerPoint', exe: 'POWERPNT.EXE' },
+            { name: 'Microsoft Outlook', exe: 'OUTLOOK.EXE' },
+            { name: 'Microsoft OneNote', exe: 'ONENOTE.EXE' },
+            { name: 'Microsoft Access', exe: 'MSACCESS.EXE' },
+            { name: 'Microsoft Publisher', exe: 'MSPUB.EXE' },
+            { name: 'Microsoft Teams', exe: 'Teams.exe' }
+        ];
+
+        const baseRoots = [
+            'C:\\Program Files\\Microsoft Office\\root\\Office16',
+            'C:\\Program Files (x86)\\Microsoft Office\\root\\Office16',
+            'C:\\Program Files\\Microsoft Office\\Office16',
+            'C:\\Program Files (x86)\\Microsoft Office\\Office16',
+            'C:\\Program Files\\Microsoft Office\\root\\Office15',
+            'C:\\Program Files (x86)\\Microsoft Office\\root\\Office15',
+            'C:\\Program Files\\Microsoft 365\\Office16',
+            path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Teams', 'current'),
+            path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps')
+        ];
+
+        for (const office of officeApps) {
+            for (const root of baseRoots) {
+                const target = path.join(root, office.exe);
+                if (fsSync.existsSync(target)) {
+                    addApp(office.name, 'Microsoft Office & Business', target, root, 'Microsoft Corporation');
+                    break;
+                }
+            }
+        }
+    }
+
+    scanWindowsBuiltins(addApp) {
+        const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+        const builtins = [
+            { name: 'Notepad', exe: path.join(system32, 'notepad.exe'), type: 'Productivity & Development' },
+            { name: 'Calculator', exe: path.join(system32, 'calc.exe'), type: 'Productivity & Development' },
+            { name: 'Paint', exe: path.join(system32, 'mspaint.exe'), type: 'Media, Design & Games' },
+            { name: 'Command Prompt', exe: path.join(system32, 'cmd.exe'), type: 'Productivity & Development' },
+            { name: 'PowerShell', exe: path.join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'), type: 'Productivity & Development' }
+        ];
+
+        for (const b of builtins) {
+            if (fsSync.existsSync(b.exe)) {
+                addApp(b.name, b.type, b.exe, system32, 'Microsoft Windows');
+            }
+        }
+    }
+
     async scanShortcutDirectory(dir, addApp, depth = 0) {
         if (depth > 4) return;
         try {
@@ -200,20 +265,28 @@ class AppScanner {
                 if (entry.isDirectory()) {
                     await this.scanShortcutDirectory(fullPath, addApp, depth + 1);
                 } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.lnk')) {
-                    const appName = path.basename(entry.name, '.lnk');
+                    const rawName = path.basename(entry.name, '.lnk');
                     // Skip uninstallers, help files, readme
-                    if (!/uninstall|documentation|help|read me|website|release notes/i.test(appName)) {
+                    if (!/uninstall|documentation|help|read me|website|release notes|troubleshoot|diagnostics/i.test(rawName)) {
                         let type = 'Installed Application';
-                        if (/word|excel|powerpoint|outlook|onenote|teams|access|publisher/i.test(appName)) {
-                            type = 'Microsoft Office';
+                        if (/word|excel|powerpoint|outlook|onenote|teams|access|publisher|office|visio|project/i.test(rawName)) {
+                            type = 'Microsoft Office & Business';
                         }
-                        addApp(appName, type, fullPath, dir, 'Local Machine');
+                        addApp(rawName, type, fullPath, dir, 'Local Machine');
                     }
                 }
             }
         } catch (e) {
             // Directory read failure
         }
+    }
+
+    cleanAppName(name) {
+        if (!name) return '';
+        let clean = name.replace(/\.exe$/i, '').replace(/\.lnk$/i, '');
+        // Remove version numbers and trailing build numbers
+        clean = clean.replace(/\s*(v?\d+(\.\d+)+|x86|x64|32-bit|64-bit|setup|installer)/gi, '');
+        return clean.trim();
     }
 
     categorizeApp(appName, defaultType = 'Installed Application') {
@@ -252,67 +325,26 @@ class AppScanner {
         return defaultType;
     }
 
-    getCuratedApps() {
-        return [
-            // Microsoft Office & 365 Suite
-            { name: 'Microsoft Word', type: 'Microsoft Office & Business', executable: 'winword.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft Excel', type: 'Microsoft Office & Business', executable: 'excel.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft PowerPoint', type: 'Microsoft Office & Business', executable: 'powerpnt.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft Outlook', type: 'Microsoft Office & Business', executable: 'outlook.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft OneNote', type: 'Microsoft Office & Business', executable: 'onenote.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft Teams', type: 'Microsoft Office & Business', executable: 'teams.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft Access', type: 'Microsoft Office & Business', executable: 'msaccess.exe', publisher: 'Microsoft Corporation' },
-            { name: 'Microsoft Publisher', type: 'Microsoft Office & Business', executable: 'mspub.exe', publisher: 'Microsoft Corporation' },
-            
-            // Productivity & Dev
-            { name: 'Visual Studio Code', type: 'Productivity & Development', executable: 'code.exe', publisher: 'Microsoft' },
-            { name: 'Visual Studio', type: 'Productivity & Development', executable: 'devenv.exe', publisher: 'Microsoft' },
-            { name: 'Notion', type: 'Productivity & Development', executable: 'Notion.exe', publisher: 'Notion Labs' },
-            { name: 'Obsidian', type: 'Productivity & Development', executable: 'Obsidian.exe', publisher: 'Obsidian' },
-            { name: 'Slack', type: 'Productivity & Development', executable: 'slack.exe', publisher: 'Slack Technologies' },
-            { name: 'Discord', type: 'Web Browser & Communication', executable: 'discord.exe', publisher: 'Discord Inc.' },
-            { name: 'Zoom', type: 'Productivity & Development', executable: 'Zoom.exe', publisher: 'Zoom Video Communications' },
-            { name: 'Figma', type: 'Productivity & Development', executable: 'Figma.exe', publisher: 'Figma' },
-            { name: 'Postman', type: 'Productivity & Development', executable: 'Postman.exe', publisher: 'Postman' },
-            
-            // PWAs & Web Apps
-            { name: 'Google Docs (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://docs.google.com', publisher: 'Google' },
-            { name: 'Google Sheets (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://sheets.google.com', publisher: 'Google' },
-            { name: 'Google Slides (PWA)', type: 'Progressive Web App (PWA)', executable: 'chrome.exe --app=https://slides.google.com', publisher: 'Google' },
-            { name: 'Linear (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://linear.app', publisher: 'Linear' },
-            { name: 'Trello (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://trello.com', publisher: 'Atlassian' },
-            { name: 'Canva (PWA)', type: 'Progressive Web App (PWA)', executable: 'https://canva.com', publisher: 'Canva' },
-
-            // Browsers
-            { name: 'Google Chrome', type: 'Web Browser & Communication', executable: 'chrome.exe', publisher: 'Google LLC' },
-            { name: 'Microsoft Edge', type: 'Web Browser & Communication', executable: 'msedge.exe', publisher: 'Microsoft' },
-            { name: 'Mozilla Firefox', type: 'Web Browser & Communication', executable: 'firefox.exe', publisher: 'Mozilla' },
-            { name: 'Brave Browser', type: 'Web Browser & Communication', executable: 'brave.exe', publisher: 'Brave Software' },
-
-            // Utilities
-            { name: 'Notepad', type: 'Productivity & Development', executable: 'notepad.exe', publisher: 'Microsoft Windows' },
-            { name: 'Calculator', type: 'Productivity & Development', executable: 'calc.exe', publisher: 'Microsoft Windows' },
-            { name: 'Paint', type: 'Media, Design & Games', executable: 'mspaint.exe', publisher: 'Microsoft Windows' },
-            { name: 'Spotify', type: 'Media, Design & Games', executable: 'spotify.exe', publisher: 'Spotify AB' }
-        ];
-    }
-
     async scanMacOSApps() {
         const apps = [];
         try {
-            const applicationsDir = '/Applications';
-            const entries = await fs.readdir(applicationsDir, { withFileTypes: true });
-            for (const entry of entries) {
-                if (entry.isDirectory() && entry.name.endsWith('.app')) {
-                    const appName = entry.name.replace('.app', '');
-                    const appPath = path.join(applicationsDir, entry.name);
-                    apps.push({
-                        name: appName,
-                        type: this.categorizeApp(appName, 'Mac Application'),
-                        executable: appPath,
-                        path: appPath,
-                        publisher: 'macOS'
-                    });
+            const applicationsDirs = ['/Applications', '/System/Applications', path.join(process.env.HOME || '', 'Applications')];
+            for (const appDir of applicationsDirs) {
+                if (fsSync.existsSync(appDir)) {
+                    const entries = await fs.readdir(appDir, { withFileTypes: true });
+                    for (const entry of entries) {
+                        if (entry.isDirectory() && entry.name.endsWith('.app')) {
+                            const appName = entry.name.replace('.app', '');
+                            const appPath = path.join(appDir, entry.name);
+                            apps.push({
+                                name: appName,
+                                type: this.categorizeApp(appName, 'Mac Application'),
+                                executable: appPath,
+                                path: appPath,
+                                publisher: 'macOS'
+                            });
+                        }
+                    }
                 }
             }
         } catch (e) {

@@ -109,9 +109,9 @@ class FocusManager {
     }
 
     initializeDefaultData() {
-        this.selectedApps = new Set(['Word', 'Excel', 'Visual Studio Code', 'Notepad']);
-        this.allowedApps = new Set(['Calculator', 'OneNote']);
-        this.blockedApps = new Set(['Chrome', 'Discord', 'Spotify', 'Steam']);
+        this.selectedApps = new Set();
+        this.allowedApps = new Set();
+        this.blockedApps = new Set();
         this.sessionStats = [];
     }
 
@@ -455,6 +455,13 @@ class FocusManager {
     }
 
     async openApp(appNameOrPath) {
+        if (!appNameOrPath) return false;
+        if (this.appScanner && this.appScanner.appPathCache) {
+            const cachedPath = this.appScanner.appPathCache.get(appNameOrPath.toLowerCase());
+            if (cachedPath && fsSync.existsSync(cachedPath)) {
+                return await NativeWindows.launchApp(cachedPath);
+            }
+        }
         return await NativeWindows.launchApp(appNameOrPath);
     }
 

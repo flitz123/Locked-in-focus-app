@@ -64,6 +64,7 @@ function createWindow() {
     // Initialize managers
     focusManager = new FocusManager();
     appScanner = new AppScanner();
+    focusManager.appScanner = appScanner;
     focusManager.setMainWindow(mainWindow);
 
     // Load initial data and scan apps

@@ -48,6 +48,13 @@
             "target": "nsis",
             "icon": "assets/icon.ico"
         },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "Locked-In Focus"
+        },
         "mac": {
             "target": "dmg",
             "icon": "assets/icon.icns"

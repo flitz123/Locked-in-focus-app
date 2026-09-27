@@ -153,8 +153,10 @@ class NativeWindowsHelper {
 
     static async launchApp(appNameOrPath) {
         try {
+            if (!appNameOrPath || typeof appNameOrPath !== 'string') return false;
+
             if (process.platform === 'win32') {
-                // If it's a full path or file
+                // If it's a full path or file that exists on disk
                 if (fs.existsSync(appNameOrPath)) {
                     spawn('cmd.exe', ['/c', 'start', '""', appNameOrPath], {
                         detached: true,
@@ -163,12 +165,34 @@ class NativeWindowsHelper {
                     return true;
                 }
 
-                // If it's a protocol / app alias / system command
-                spawn('cmd.exe', ['/c', 'start', '""', appNameOrPath], {
-                    detached: true,
-                    stdio: 'ignore'
-                }).unref();
-                return true;
+                // Check common system32 tools (e.g. notepad, calc, cmd, powershell)
+                const baseName = appNameOrPath.replace(/\.exe$/i, '');
+                const system32Path = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', `${baseName}.exe`);
+                if (fs.existsSync(system32Path)) {
+                    spawn('cmd.exe', ['/c', 'start', '""', system32Path], {
+                        detached: true,
+                        stdio: 'ignore'
+                    }).unref();
+                    return true;
+                }
+
+                // Check if command is in PATH
+                try {
+                    const { stdout } = await execPromise(`where.exe "${appNameOrPath}"`, { timeout: 1500 });
+                    if (stdout && stdout.trim()) {
+                        const verifiedPath = stdout.trim().split('\r\n')[0].trim();
+                        spawn('cmd.exe', ['/c', 'start', '""', verifiedPath], {
+                            detached: true,
+                            stdio: 'ignore'
+                        }).unref();
+                        return true;
+                    }
+                } catch (e) {
+                    // Not in PATH
+                }
+
+                console.warn(`[LaunchApp] Executable or path not found: ${appNameOrPath}`);
+                return false;
             } else if (process.platform === 'darwin') {
                 spawn('open', ['-a', appNameOrPath], { detached: true, stdio: 'ignore' }).unref();
                 return true;
@@ -177,7 +201,7 @@ class NativeWindowsHelper {
                 return true;
             }
         } catch (e) {
-            console.error(`Error launching app ${appNameOrPath}:`, e);
+            console.warn(`Error launching app ${appNameOrPath}:`, e.message);
             return false;
         }
     }
