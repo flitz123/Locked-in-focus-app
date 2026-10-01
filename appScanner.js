@@ -182,18 +182,15 @@ class AppScanner {
 
         // 6. Scan Currently Running Processes with Interactive Windows
         try {
-            const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -Unique ProcessName, MainWindowTitle, Path | ConvertTo-Json -Compress"', { timeout: 3000 });
-            if (stdout && stdout.trim()) {
-                const procs = JSON.parse(stdout.trim());
-                const procList = Array.isArray(procs) ? procs : [procs];
-                for (const p of procList) {
-                    if (p && p.ProcessName) {
-                        const name = p.ProcessName;
-                        if (!['electron', 'locked-in', 'explorer', 'shellexperiencehost', 'searchapp', 'systemsettings', 'taskhostw', 'applicationframehost'].includes(name.toLowerCase())) {
-                            const titleName = p.MainWindowTitle ? p.MainWindowTitle.split(' - ').pop().trim() : '';
-                            const displayName = titleName && titleName.length > 2 && titleName.length < 30 ? titleName : name;
-                            addApp(displayName, 'Running Application', p.Path || `${name}.exe`, '', 'Active Application');
-                        }
+            const NativeWindows = require('./src/nativeWindows');
+            const procs = await NativeWindows.getRunningProcesses();
+            for (const p of procs) {
+                if (p && p.name) {
+                    const name = p.name;
+                    if (!['electron', 'locked-in', 'antigravity ide', 'explorer', 'shellexperiencehost', 'searchapp', 'systemsettings', 'taskhostw', 'applicationframehost', 'svchost', 'conhost'].includes(name.toLowerCase())) {
+                        const titleName = p.title ? p.title.split(' - ').pop().trim() : '';
+                        const displayName = titleName && titleName.length > 2 && titleName.length < 30 ? titleName : name;
+                        addApp(displayName, 'Running Application', p.image || `${name}.exe`, '', 'Active Application');
                     }
                 }
             }

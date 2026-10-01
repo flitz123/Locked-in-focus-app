@@ -54,28 +54,93 @@ class FocusManager {
         return name.toLowerCase().replace(/\.exe$/i, '').trim();
     }
 
-    findAppInSet(set, appName) {
-        const target = this.normalizeName(appName);
-        if (!target) return null;
+    /**
+     * Smart matcher that determines if an active window/process matches a configured app name
+     * @param {Object|string} activeInfo { name, title, path, pid } or string
+     * @param {string} targetAppName Configured app display name (e.g. "Google Chrome", "Microsoft Word")
+     */
+    matchesApp(activeInfo, targetAppName) {
+        if (!activeInfo || !targetAppName) return false;
+
+        const targetNorm = this.normalizeName(targetAppName);
+        if (!targetNorm) return false;
+
+        let activeProcName = '';
+        let activeTitle = '';
+        let activePath = '';
+
+        if (typeof activeInfo === 'string') {
+            activeProcName = this.normalizeName(activeInfo);
+        } else {
+            activeProcName = this.normalizeName(activeInfo.name || '');
+            activeTitle = (activeInfo.title || '').toLowerCase();
+            activePath = (activeInfo.path || '').toLowerCase();
+        }
+
+        // 1. Direct name equality
+        if (activeProcName === targetNorm) return true;
+
+        // 2. Known process aliases for target app
+        const knownAliases = NativeWindows.getKnownProcessNames(targetAppName);
+        for (const alias of knownAliases) {
+            const aliasNorm = this.normalizeName(alias);
+            if (activeProcName === aliasNorm || activeProcName.includes(aliasNorm) || aliasNorm.includes(activeProcName)) {
+                return true;
+            }
+        }
+
+        // 3. Check AppScanner cached executable path for target app
+        if (this.appScanner && this.appScanner.appPathCache) {
+            const cached = this.appScanner.appPathCache.get(targetNorm) || this.appScanner.appPathCache.get(targetAppName.toLowerCase());
+            if (cached) {
+                const exeBase = this.normalizeName(path.basename(cached));
+                if (exeBase && (activeProcName === exeBase || activeProcName.includes(exeBase) || exeBase.includes(activeProcName))) {
+                    return true;
+                }
+            }
+        }
+
+        // 4. Window title matching
+        if (activeTitle) {
+            if (activeTitle.includes(targetNorm) || targetNorm.includes(activeTitle)) {
+                return true;
+            }
+            // Check title with known aliases
+            for (const alias of knownAliases) {
+                if (activeTitle.includes(alias.toLowerCase())) {
+                    return true;
+                }
+            }
+        }
+
+        // 5. Active path matching
+        if (activePath && activePath.includes(targetNorm)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    findMatchingAppInSet(set, activeInfo) {
         for (const item of set) {
-            const name = this.getAppName(item);
-            if (this.normalizeName(name) === target) {
-                return item;
+            const appName = this.getAppName(item);
+            if (this.matchesApp(activeInfo, appName)) {
+                return appName;
             }
         }
         return null;
     }
 
-    isAppSelected(appName) {
-        return !!this.findAppInSet(this.selectedApps, appName);
+    isAppSelected(activeInfo) {
+        return !!this.findMatchingAppInSet(this.selectedApps, activeInfo);
     }
 
-    isAppAllowed(appName) {
-        return !!this.findAppInSet(this.allowedApps, appName);
+    isAppAllowed(activeInfo) {
+        return !!this.findMatchingAppInSet(this.allowedApps, activeInfo);
     }
 
-    isAppBlocked(appName) {
-        return !!this.findAppInSet(this.blockedApps, appName);
+    isAppBlocked(activeInfo) {
+        return !!this.findMatchingAppInSet(this.blockedApps, activeInfo);
     }
 
     async loadData() {
@@ -176,16 +241,16 @@ class FocusManager {
                 blockedApps: Array.from(this.blockedApps)
             };
 
-            // 1. Bring selected and allowed apps to foreground
-            await this.bringSelectedAppsToForeground();
+            // 1. Immediately close any running blocked apps
+            await this.closeBlockedApps();
 
-            // 2. Push Locked-In App window to background / minimize
+            // 2. Launch / bring selected and allowed apps to foreground ONCE at start
+            await this.initialLaunchSelectedApps();
+
+            // 3. Minimize Locked-In App window so user is directly in focus app
             if (this.mainWindow && !this.mainWindow.isDestroyed()) {
                 this.mainWindow.minimize();
             }
-
-            // 3. Immediately close any running blocked apps
-            await this.closeBlockedApps();
 
             // 4. Start active window & process monitoring loop
             const checkInterval = Math.max(1000, parseInt(settings.checkInterval) || 1500);
@@ -313,14 +378,14 @@ class FocusManager {
                 const activeName = activeApp ? (activeApp.name || activeApp.title || 'Unknown') : 'Selected Application';
 
                 const isSelf = /electron|locked-in/i.test(activeName);
-                const isSelected = this.isAppSelected(activeName);
-                const isAllowed = this.isAppAllowed(activeName);
-                const isBlocked = this.isAppBlocked(activeName);
+                const matchedSelected = this.findMatchingAppInSet(this.selectedApps, activeApp || activeName);
+                const matchedAllowed = this.findMatchingAppInSet(this.allowedApps, activeApp || activeName);
+                const matchedBlocked = this.findMatchingAppInSet(this.blockedApps, activeApp || activeName);
 
-                if (isSelected || isAllowed || isSelf) {
+                if (matchedSelected || matchedAllowed || isSelf) {
                     // USER IS FOCUSED ON ALLOWED/SELECTED APP
                     this.focusedTime += deltaSeconds;
-                    const displayName = isSelf ? (Array.from(this.selectedApps)[0] || 'Focus App') : activeName;
+                    const displayName = isSelf ? (Array.from(this.selectedApps)[0] || 'Focus App') : (matchedSelected || matchedAllowed || activeName);
                     this.currentActiveApp = displayName;
 
                     // Track app usage time
@@ -339,37 +404,40 @@ class FocusManager {
                 } else {
                     // USER SWITCHED TO BLOCKED OR UNAUTHORIZED APP
                     this.distractedTime += deltaSeconds;
-                    this.currentActiveApp = activeName;
+                    const distractionName = matchedBlocked || activeName;
+                    this.currentActiveApp = distractionName;
 
                     // Record attempt if changed app
-                    if (this.lastActiveAppName !== activeName) {
+                    if (this.lastActiveAppName !== distractionName) {
                         this.blockedAttempts++;
                     }
 
                     // Track distraction time & attempts for this specific app
-                    const distData = this.distractionApps.get(activeName) || { timeSpent: 0, attempts: 0 };
+                    const distData = this.distractionApps.get(distractionName) || { timeSpent: 0, attempts: 0 };
                     distData.timeSpent += deltaSeconds;
-                    if (this.lastActiveAppName !== activeName) {
+                    if (this.lastActiveAppName !== distractionName) {
                         distData.attempts += 1;
                     }
-                    this.distractionApps.set(activeName, distData);
+                    this.distractionApps.set(distractionName, distData);
 
-                    // Aggressive Safe Browser Enforcement:
-                    // If blocked or unauthorized, close it and bring selected app to front!
-                    if (isBlocked) {
-                        console.log(`[Aggressive Block] Terminating blocked app: ${activeName}`);
-                        await NativeWindows.killProcess(activeName);
+                    if (matchedBlocked) {
+                        // Aggressive Enforcement: Terminate blocked app immediately!
+                        console.log(`[Aggressive Block] Terminating blocked app: ${distractionName} (process: ${activeName})`);
+                        if (activeApp && activeApp.name) {
+                            await NativeWindows.killProcess(activeApp.name);
+                        }
+                        await NativeWindows.killProcess(matchedBlocked);
                         await this.bringSelectedAppsToForeground();
                     } else {
-                        // Non-selected app: minimize it or bring selected app back to front
-                        console.log(`[Focus Lock] User navigated to unauthorized app: ${activeName}`);
+                        // Non-selected app: bring selected app back to front (WINDOW FOCUS ONLY, NO NEW PROCESS SPAWN)
+                        console.log(`[Focus Lock] User navigated to unauthorized app: ${activeName}. Restoring focus.`);
                         await this.bringSelectedAppsToForeground();
                     }
 
                     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
                         this.mainWindow.webContents.send('focus-update', {
-                            app: activeName,
-                            status: isBlocked ? 'blocked' : 'distracted',
+                            app: distractionName,
+                            status: matchedBlocked ? 'blocked' : 'distracted',
                             focusedTime: Math.round(this.focusedTime),
                             distractedTime: Math.round(this.distractedTime),
                             blockedAttempts: this.blockedAttempts
@@ -379,11 +447,10 @@ class FocusManager {
 
                 this.lastActiveAppName = activeName;
 
-                // 2. Ensure all selected apps remain open
-                await this.ensureSelectedAppsRunning();
-
-                // 3. Continuously enforce closing of any blocked app processes
-                await this.closeBlockedApps();
+                // 2. Continuously enforce closing of any blocked app processes running in background
+                if (this.blockedApps.size > 0) {
+                    await this.closeBlockedApps();
+                }
 
             } catch (err) {
                 console.error('Error during monitoring tick:', err);
@@ -394,62 +461,54 @@ class FocusManager {
     async getActiveApplication() {
         try {
             const fg = await NativeWindows.getForegroundWindow();
-            if (fg && fg.name) {
+            if (fg && (fg.name || fg.title)) {
                 return fg;
             }
         } catch (e) {}
 
-        // Fallback: detect via running processes with window title
-        if (process.platform === 'win32') {
-            try {
-                const { stdout } = await execPromise('powershell -NoProfile "Get-Process | Where-Object {$_.MainWindowTitle -ne \"\"} | Select-Object -First 1 ProcessName, MainWindowTitle | ConvertTo-Json"', { timeout: 2000 });
-                if (stdout && stdout.trim()) {
-                    const parsed = JSON.parse(stdout.trim());
-                    return { name: parsed.ProcessName, title: parsed.MainWindowTitle };
-                }
-            } catch (e) {}
-        }
         return null;
     }
 
-    async bringSelectedAppsToForeground() {
+    /**
+     * Initial launch at session start: Opens or activates selected apps once
+     */
+    async initialLaunchSelectedApps() {
+        const runningProcs = await NativeWindows.getRunningProcesses();
         const appsToFocus = [...Array.from(this.selectedApps), ...Array.from(this.allowedApps)];
+
         for (const appName of appsToFocus) {
             try {
-                const running = await NativeWindows.isProcessRunning(appName);
+                const running = await NativeWindows.isProcessRunning(appName, runningProcs);
                 if (running) {
                     await NativeWindows.activateApp(appName);
                 } else {
                     await this.openApp(appName);
                 }
             } catch (e) {
-                console.warn(`Could not bring app ${appName} to foreground:`, e.message);
+                console.warn(`Could not launch app ${appName}:`, e.message);
             }
         }
     }
 
-    async ensureSelectedAppsRunning() {
-        for (const appName of this.selectedApps) {
+    /**
+     * Brings already open selected app windows to the foreground without spawning new processes!
+     */
+    async bringSelectedAppsToForeground() {
+        const appsToFocus = Array.from(this.selectedApps);
+        for (const appName of appsToFocus) {
             try {
-                const isRunning = await NativeWindows.isProcessRunning(appName);
-                if (!isRunning) {
-                    console.log(`[Auto-Recovery] Selected app "${appName}" was closed. Relaunching...`);
-                    await this.openApp(appName);
-                }
+                await NativeWindows.activateApp(appName);
             } catch (e) {
-                // Ignore process check error
+                // Ignore activation errors
             }
         }
     }
 
     async closeBlockedApps() {
+        if (this.blockedApps.size === 0) return;
         for (const appName of this.blockedApps) {
             try {
-                const isRunning = await NativeWindows.isProcessRunning(appName);
-                if (isRunning) {
-                    console.log(`[Safe-Lock] Closing blocked app: ${appName}`);
-                    await NativeWindows.killProcess(appName);
-                }
+                await NativeWindows.killProcess(appName);
             } catch (e) {}
         }
     }
@@ -457,7 +516,8 @@ class FocusManager {
     async openApp(appNameOrPath) {
         if (!appNameOrPath) return false;
         if (this.appScanner && this.appScanner.appPathCache) {
-            const cachedPath = this.appScanner.appPathCache.get(appNameOrPath.toLowerCase());
+            const clean = this.normalizeName(appNameOrPath);
+            const cachedPath = this.appScanner.appPathCache.get(clean) || this.appScanner.appPathCache.get(appNameOrPath.toLowerCase());
             if (cachedPath && fsSync.existsSync(cachedPath)) {
                 return await NativeWindows.launchApp(cachedPath);
             }
