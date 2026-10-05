@@ -22,10 +22,19 @@ namespace LockedInFocusHelper {
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("user32.dll")]
         public static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
 
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -39,6 +48,9 @@ namespace LockedInFocusHelper {
             switch (command) {
                 case "get-active":
                     GetActive();
+                    break;
+                case "get-running":
+                    GetRunning();
                     break;
                 case "list-windows":
                     ListWindows();
@@ -93,6 +105,28 @@ namespace LockedInFocusHelper {
             }
         }
 
+        static void GetRunning() {
+            List<string> items = new List<string>();
+            try {
+                Process[] processes = Process.GetProcesses();
+                foreach (Process p in processes) {
+                    try {
+                        string name = p.ProcessName;
+                        string title = "";
+                        try { title = p.MainWindowTitle; } catch { }
+                        items.Add(string.Format("{{\"pid\":{0},\"name\":\"{1}\",\"title\":\"{2}\"}}",
+                            p.Id,
+                            EscapeJson(name),
+                            EscapeJson(title)
+                        ));
+                    } catch { }
+                }
+                Console.WriteLine("[" + string.Join(",", items.ToArray()) + "]");
+            } catch {
+                Console.WriteLine("[]");
+            }
+        }
+
         static void ListWindows() {
             List<string> items = new List<string>();
             try {
@@ -134,13 +168,40 @@ namespace LockedInFocusHelper {
             }
         }
 
+        static void ForceForeground(IntPtr hWnd) {
+            if (hWnd == IntPtr.Zero) return;
+            try {
+                ShowWindow(hWnd, SW_RESTORE);
+                IntPtr fgWnd = GetForegroundWindow();
+                uint fgThread = 0;
+                if (fgWnd != IntPtr.Zero) {
+                    GetWindowThreadProcessId(fgWnd, out fgThread);
+                }
+                uint currentThread = GetCurrentThreadId();
+
+                if (fgThread != 0 && fgThread != currentThread) {
+                    AttachThreadInput(currentThread, fgThread, true);
+                    BringWindowToTop(hWnd);
+                    SetForegroundWindow(hWnd);
+                    AttachThreadInput(currentThread, fgThread, false);
+                } else {
+                    BringWindowToTop(hWnd);
+                    SetForegroundWindow(hWnd);
+                }
+            } catch {
+                ShowWindow(hWnd, SW_RESTORE);
+                SetForegroundWindow(hWnd);
+            }
+        }
+
         static void ActivateApp(string query) {
             if (string.IsNullOrWhiteSpace(query)) {
                 Console.WriteLine("false");
                 return;
             }
 
-            query = query.Trim().ToLowerInvariant();
+            string q = query.Trim().ToLowerInvariant();
+            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             bool activated = false;
 
             try {
@@ -161,10 +222,9 @@ namespace LockedInFocusHelper {
                             } catch { }
                         }
 
-                        if ((procName.Length > 0 && (procName.Contains(query) || query.Contains(procName))) ||
-                            (title.Length > 0 && (title.Contains(query) || query.Contains(title)))) {
-                            ShowWindow(hwnd, SW_RESTORE);
-                            SetForegroundWindow(hwnd);
+                        if ((procName.Length > 0 && (procName == q || procName.Contains(q) || q.Contains(procName))) ||
+                            (title.Length > 0 && (title.Contains(q) || q.Contains(title)))) {
+                            ForceForeground(hwnd);
                             activated = true;
                             return false; // Stop enumerating
                         }
@@ -183,6 +243,7 @@ namespace LockedInFocusHelper {
             }
 
             string q = query.Trim().ToLowerInvariant();
+            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             int count = 0;
 
             try {
@@ -190,19 +251,20 @@ namespace LockedInFocusHelper {
                 foreach (Process p in processes) {
                     try {
                         string name = p.ProcessName.ToLowerInvariant();
+                        if (IsProtectedProcess(name)) continue;
+
                         string title = "";
                         try { title = p.MainWindowTitle.ToLowerInvariant(); } catch { }
                         string path = "";
                         try { path = p.MainModule.FileName.ToLowerInvariant(); } catch { }
 
                         bool matches = false;
-                        if (name == q || name == q.Replace(".exe", "")) matches = true;
+                        if (name == q) matches = true;
                         else if (name.Contains(q) || q.Contains(name)) matches = true;
-                        else if (!string.IsNullOrEmpty(title) && (title.Contains(q) || q.Contains(title))) matches = true;
+                        else if (!string.IsNullOrEmpty(title) && title.Contains(q)) matches = true;
                         else if (!string.IsNullOrEmpty(path) && path.Contains(q)) matches = true;
 
-                        // Protect critical Windows and Self processes
-                        if (matches && !IsProtectedProcess(name)) {
+                        if (matches) {
                             p.Kill();
                             count++;
                         }
@@ -220,6 +282,7 @@ namespace LockedInFocusHelper {
             }
 
             string q = query.Trim().ToLowerInvariant();
+            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             bool running = false;
 
             try {
@@ -232,9 +295,8 @@ namespace LockedInFocusHelper {
                         string path = "";
                         try { path = p.MainModule.FileName.ToLowerInvariant(); } catch { }
 
-                        if (name == q || name == q.Replace(".exe", "") ||
-                            name.Contains(q) || q.Contains(name) ||
-                            (!string.IsNullOrEmpty(title) && (title.Contains(q) || q.Contains(title))) ||
+                        if (name == q || name.Contains(q) || q.Contains(name) ||
+                            (!string.IsNullOrEmpty(title) && title.Contains(q)) ||
                             (!string.IsNullOrEmpty(path) && path.Contains(q))) {
                             running = true;
                             break;
@@ -247,16 +309,20 @@ namespace LockedInFocusHelper {
         }
 
         static bool IsProtectedProcess(string procName) {
+            if (string.IsNullOrEmpty(procName)) return true;
             string p = procName.ToLowerInvariant();
-            string[] protectedList = new string[] {
-                "electron", "locked-in", "locked-in focus app", "antigravity ide",
+            string[] exactProtected = new string[] {
                 "explorer", "csrss", "smss", "services", "lsass", "winlogon", "dwm",
                 "svchost", "taskhostw", "sihost", "system", "idle", "runtimebroker",
-                "shellexperiencehost", "searchapp", "textinputhost", "cmd", "powershell",
-                "conhost", "node"
+                "shellexperiencehost", "searchapp", "textinputhost", "cmd", "powershell", "pwsh",
+                "conhost", "node", "electron", "locked-in", "locked-in focus app", "antigravity ide",
+                "windowhelper"
             };
-            foreach (string prot in protectedList) {
-                if (p == prot || p.Contains(prot)) return true;
+            foreach (string prot in exactProtected) {
+                if (p == prot) return true;
+            }
+            if (p.StartsWith("electron") || p.Contains("locked-in") || p.Contains("antigravity")) {
+                return true;
             }
             return false;
         }

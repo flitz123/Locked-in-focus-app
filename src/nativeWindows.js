@@ -80,10 +80,10 @@ class NativeWindowsHelper {
             return null;
         }
 
-        // 1. Try compiled Win32 C# helper first (fastest ~15ms)
+        // 1. Try compiled Win32 C# helper first (fastest ~5ms)
         if (fs.existsSync(HELPER_EXE_PATH)) {
             try {
-                const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['get-active'], { timeout: 1500 });
+                const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['get-active'], { timeout: 1200 });
                 if (stdout && stdout.trim()) {
                     const parsed = JSON.parse(stdout.trim());
                     if (parsed && (parsed.processName || parsed.windowTitle)) {
@@ -100,7 +100,7 @@ class NativeWindowsHelper {
             }
         }
 
-        // 2. Fast PowerShell fallback using safe Base64 command
+        // 2. PowerShell fallback
         try {
             const script = `
 $w = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId); [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder s, int m);' -Name "W" -Namespace "U" -PassThru -ErrorAction SilentlyContinue
@@ -139,26 +139,44 @@ if ($h -ne [IntPtr]::Zero) {
 
     static async getRunningProcesses() {
         if (process.platform !== 'win32') return [];
+
+        // 1. Try helper first (takes <5ms)
+        if (fs.existsSync(HELPER_EXE_PATH)) {
+            try {
+                const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['get-running'], { timeout: 1500 });
+                if (stdout && stdout.trim()) {
+                    const parsed = JSON.parse(stdout.trim());
+                    if (Array.isArray(parsed)) {
+                        return parsed.map(p => ({
+                            name: (p.name || '').toLowerCase().replace(/\.exe$/i, ''),
+                            image: `${p.name}.exe`,
+                            pid: p.pid || 0,
+                            title: p.title || ''
+                        }));
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // 2. Fallback to tasklist
         try {
-            const { stdout } = await execFilePromise('tasklist.exe', ['/FO', 'CSV', '/NH', '/V'], { timeout: 2000 });
+            const { stdout } = await execFilePromise('tasklist.exe', ['/FO', 'CSV', '/NH'], { timeout: 2500 });
             const lines = stdout.split('\r\n');
             const procs = [];
 
             for (const line of lines) {
                 if (!line.trim()) continue;
-                // Parse CSV line: "Image Name","PID","Session Name","Session#","Mem Usage","Status","User Name","CPU Time","Window Title"
                 const parts = line.split('","').map(p => p.replace(/^"|"$/g, '').trim());
                 if (parts.length >= 2) {
                     const image = parts[0];
                     const pid = parseInt(parts[1], 10) || 0;
-                    const title = parts.length >= 9 ? parts[8] : '';
                     const baseName = image.replace(/\.exe$/i, '').toLowerCase();
 
                     procs.push({
                         image: image,
                         name: baseName,
                         pid: pid,
-                        title: title
+                        title: ''
                     });
                 }
             }
@@ -174,11 +192,11 @@ if ($h -ne [IntPtr]::Zero) {
 
         const aliases = this.getKnownProcessNames(appNameOrProcess);
 
-        // 1. Try helper first
+        // 1. Try C# helper first with AttachThreadInput + SetForegroundWindow
         if (fs.existsSync(HELPER_EXE_PATH)) {
             for (const alias of aliases) {
                 try {
-                    const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['activate', alias], { timeout: 1500 });
+                    const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['activate', alias], { timeout: 1200 });
                     if (stdout && stdout.trim() === 'true') {
                         return true;
                     }
@@ -186,30 +204,7 @@ if ($h -ne [IntPtr]::Zero) {
             }
         }
 
-        // 2. PowerShell activation fallback
-        for (const alias of aliases) {
-            try {
-                const clean = alias.replace(/[^a-zA-Z0-9_\-]/g, '');
-                if (!clean) continue;
-                const psCode = `
-$w = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -Name "Act" -Namespace "U" -PassThru -ErrorAction SilentlyContinue
-$procs = Get-Process | Where-Object { ($_.ProcessName -like "*${clean}*" -or $_.MainWindowTitle -like "*${clean}*") -and $_.MainWindowHandle -ne [IntPtr]::Zero }
-foreach ($p in $procs) {
-    [U.Act]::ShowWindow($p.MainWindowHandle, 9)
-    [U.Act]::SetForegroundWindow($p.MainWindowHandle)
-}
-`;
-                const encoded = Buffer.from(psCode, 'utf16le').toString('base64');
-                await execFilePromise('powershell.exe', [
-                    '-NoProfile',
-                    '-NonInteractive',
-                    '-ExecutionPolicy', 'Bypass',
-                    '-EncodedCommand', encoded
-                ], { timeout: 2000 });
-            } catch (e) {}
-        }
-
-        return true;
+        return false;
     }
 
     static async isProcessRunning(appNameOrProcess, runningProcs = null) {
@@ -217,20 +212,35 @@ foreach ($p in $procs) {
         if (!appNameOrProcess) return false;
 
         const aliases = this.getKnownProcessNames(appNameOrProcess);
-        const procs = runningProcs || await this.getRunningProcesses();
 
-        for (const proc of procs) {
-            const procLower = proc.name.toLowerCase();
-            const titleLower = (proc.title || '').toLowerCase();
+        // If runningProcs list is already provided, check against it instantly
+        if (runningProcs && Array.isArray(runningProcs)) {
+            for (const proc of runningProcs) {
+                const procLower = (proc.name || '').toLowerCase();
+                const titleLower = (proc.title || '').toLowerCase();
 
-            for (const alias of aliases) {
-                const aliasLower = alias.toLowerCase();
-                if (procLower === aliasLower ||
-                    procLower.includes(aliasLower) ||
-                    aliasLower.includes(procLower) ||
-                    (titleLower && titleLower.includes(aliasLower))) {
-                    return true;
+                for (const alias of aliases) {
+                    const aliasLower = alias.toLowerCase();
+                    if (procLower === aliasLower ||
+                        procLower.includes(aliasLower) ||
+                        aliasLower.includes(procLower) ||
+                        (titleLower && titleLower.includes(aliasLower))) {
+                        return true;
+                    }
                 }
+            }
+            return false;
+        }
+
+        // Fast check via helper
+        if (fs.existsSync(HELPER_EXE_PATH)) {
+            for (const alias of aliases) {
+                try {
+                    const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['is-running', alias], { timeout: 1200 });
+                    if (stdout && stdout.trim() === 'true') {
+                        return true;
+                    }
+                } catch (e) {}
             }
         }
 
@@ -244,60 +254,34 @@ foreach ($p in $procs) {
         const aliases = this.getKnownProcessNames(appNameOrProcess);
         let killedAny = false;
 
-        // 1. Get running processes list to find matching PIDs and Image Names
-        const runningProcs = await this.getRunningProcesses();
-        const pidsToKill = new Set();
-        const imagesToKill = new Set();
-
-        const protectedNames = new Set([
-            'electron', 'locked-in', 'locked-in focus app', 'antigravity ide',
-            'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon', 'dwm',
-            'svchost', 'taskhostw', 'sihost', 'system', 'idle', 'runtimebroker',
-            'shellexperiencehost', 'searchapp', 'textinputhost', 'cmd', 'powershell',
-            'conhost', 'node'
-        ]);
-
-        for (const proc of runningProcs) {
-            if (protectedNames.has(proc.name)) continue;
-
-            const procLower = proc.name.toLowerCase();
-            const titleLower = (proc.title || '').toLowerCase();
-
+        // 1. Use C# helper (instant termination without spawning taskkill/cmd)
+        if (fs.existsSync(HELPER_EXE_PATH)) {
             for (const alias of aliases) {
-                const aliasLower = alias.toLowerCase();
-                if (procLower === aliasLower ||
-                    procLower.includes(aliasLower) ||
-                    aliasLower.includes(procLower) ||
-                    (titleLower && titleLower.includes(aliasLower))) {
-                    if (proc.pid > 0) pidsToKill.add(proc.pid);
-                    if (proc.image) imagesToKill.add(proc.image);
-                    break;
-                }
+                try {
+                    const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['kill', alias], { timeout: 1500 });
+                    if (stdout && parseInt(stdout.trim(), 10) > 0) {
+                        killedAny = true;
+                    }
+                } catch (e) {}
             }
         }
 
-        // Kill by PID
-        for (const pid of pidsToKill) {
-            try {
-                await execPromise(`taskkill /F /PID ${pid} /T`, { timeout: 2000 }).catch(() => {});
-                killedAny = true;
-            } catch (e) {}
-        }
+        // 2. Fallback: taskkill for any lingering processes
+        if (!killedAny) {
+            const protectedNames = new Set([
+                'electron', 'locked-in', 'locked-in focus app', 'antigravity ide',
+                'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon', 'dwm',
+                'svchost', 'taskhostw', 'sihost', 'system', 'idle', 'runtimebroker',
+                'shellexperiencehost', 'searchapp', 'textinputhost', 'cmd', 'powershell',
+                'conhost', 'node'
+            ]);
 
-        // Kill by image name
-        for (const image of imagesToKill) {
-            try {
-                await execPromise(`taskkill /F /IM "${image}" /T`, { timeout: 2000 }).catch(() => {});
-                killedAny = true;
-            } catch (e) {}
-        }
-
-        // Direct fallback on alias image names
-        for (const alias of aliases) {
-            if (!protectedNames.has(alias)) {
-                try {
-                    await execPromise(`taskkill /F /IM "${alias}.exe" /T`, { timeout: 1500 }).catch(() => {});
-                } catch (e) {}
+            for (const alias of aliases) {
+                if (!protectedNames.has(alias)) {
+                    try {
+                        await execPromise(`taskkill /F /IM "${alias}.exe" /T`, { timeout: 1000 }).catch(() => {});
+                    } catch (e) {}
+                }
             }
         }
 
@@ -331,7 +315,7 @@ foreach ($p in $procs) {
 
                 // Check if command is in PATH
                 try {
-                    const { stdout } = await execPromise(`where.exe "${appNameOrPath}"`, { timeout: 1500 });
+                    const { stdout } = await execPromise(`where.exe "${appNameOrPath}"`, { timeout: 1200 });
                     if (stdout && stdout.trim()) {
                         const verifiedPath = stdout.trim().split('\r\n')[0].trim();
                         spawn('cmd.exe', ['/c', 'start', '""', verifiedPath], {
@@ -340,12 +324,14 @@ foreach ($p in $procs) {
                         }).unref();
                         return true;
                     }
-                } catch (e) {
-                    // Not in PATH
-                }
+                } catch (e) {}
 
-                console.warn(`[LaunchApp] Executable or path not found: ${appNameOrPath}`);
-                return false;
+                // Try running with start directly
+                spawn('cmd.exe', ['/c', 'start', '""', appNameOrPath], {
+                    detached: true,
+                    stdio: 'ignore'
+                }).unref();
+                return true;
             } else if (process.platform === 'darwin') {
                 spawn('open', ['-a', appNameOrPath], { detached: true, stdio: 'ignore' }).unref();
                 return true;
