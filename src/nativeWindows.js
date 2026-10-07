@@ -9,8 +9,9 @@ const execFilePromise = util.promisify(execFile);
 // Path to compiled C# Win32 helper executable
 const HELPER_EXE_PATH = path.join(__dirname, 'windowHelper.exe');
 
-// Known process mapping for common applications
+// Comprehensive known process mapping for common applications
 const KNOWN_PROCESS_MAP = {
+    // Browsers
     'google chrome': ['chrome'],
     'chrome': ['chrome'],
     'microsoft edge': ['msedge'],
@@ -18,38 +19,180 @@ const KNOWN_PROCESS_MAP = {
     'mozilla firefox': ['firefox'],
     'firefox': ['firefox'],
     'brave': ['brave'],
+    'brave browser': ['brave'],
     'opera': ['opera', 'launcher'],
-    'microsoft word': ['winword'],
+    'opera gx': ['opera', 'launcher'],
+    'vivaldi': ['vivaldi'],
+    'arc': ['arc'],
+    'tor browser': ['tor', 'firefox'],
+    'chromium': ['chromium'],
+    'sidekick': ['sidekick'],
+    'waterfox': ['waterfox'],
+
+    // Microsoft Office & Productivity
+    'microsoft word': ['winword', 'word'],
     'word': ['winword'],
     'microsoft excel': ['excel'],
     'excel': ['excel'],
-    'microsoft powerpoint': ['powerpnt'],
+    'microsoft powerpoint': ['powerpnt', 'powerpoint'],
     'powerpoint': ['powerpnt'],
-    'microsoft outlook': ['outlook'],
-    'outlook': ['outlook'],
+    'microsoft outlook': ['outlook', 'olk'],
+    'outlook': ['outlook', 'olk'],
     'microsoft onenote': ['onenote', 'onenotem'],
     'onenote': ['onenote', 'onenotem'],
-    'microsoft teams': ['teams', 'ms-teams'],
+    'microsoft teams': ['teams', 'ms-teams', 'msedgewebview2'],
     'teams': ['teams', 'ms-teams'],
     'microsoft access': ['msaccess'],
     'access': ['msaccess'],
-    'visual studio code': ['code'],
+    'microsoft publisher': ['mspub'],
+    'publisher': ['mspub'],
+    'microsoft visio': ['visio'],
+    'visio': ['visio'],
+    'microsoft project': ['winproj'],
+    'project': ['winproj'],
+    'onedrive': ['onedrive'],
+    'skype': ['skype'],
+
+    // Developer Tools & IDEs
+    'visual studio code': ['code', 'code - insiders'],
     'vs code': ['code'],
+    'vscode': ['code'],
     'code': ['code'],
+    'cursor': ['cursor'],
     'visual studio': ['devenv'],
+    'intellij idea': ['idea64', 'idea'],
+    'intellij': ['idea64', 'idea'],
+    'pycharm': ['pycharm64', 'pycharm'],
+    'pycharm community edition': ['pycharm64', 'pycharm'],
+    'pycharm professional': ['pycharm64', 'pycharm'],
+    'webstorm': ['webstorm64', 'webstorm'],
+    'rider': ['rider64', 'rider'],
+    'clion': ['clion64', 'clion'],
+    'goland': ['goland64', 'goland'],
+    'datagrip': ['datagrip64', 'datagrip'],
+    'android studio': ['studio64', 'studio'],
+    'eclipse': ['eclipse'],
+    'netbeans': ['netbeans', 'netbeans64'],
+    'sublime text': ['sublime_text', 'sublime'],
+    'sublime': ['sublime_text'],
+    'atom': ['atom'],
+    'notepad++': ['notepad++'],
+    'notepad plus plus': ['notepad++'],
+    'postman': ['postman'],
+    'insomnia': ['insomnia'],
+    'docker': ['docker desktop', 'dockerd'],
+    'docker desktop': ['docker desktop', 'dockerd'],
+    'gitkraken': ['gitkraken'],
+    'github desktop': ['githubdesktop'],
+    'sourcetree': ['sourcetree'],
+    'dbeaver': ['dbeaver'],
+    'tableplus': ['tableplus'],
+    'beekeeper studio': ['beekeeper-studio'],
+    'mongodb compass': ['mongodbcompass'],
+    'wireshark': ['wireshark'],
+
+    // Notes, Project Management & Docs
+    'notion': ['notion'],
+    'obsidian': ['obsidian'],
+    'logseq': ['logseq'],
+    'evernote': ['evernote'],
+    'joplin': ['joplin'],
+    'anytype': ['anytype'],
+    'todoist': ['todoist'],
+    'ticktick': ['ticktick'],
+    'trello': ['trello'],
+    'asana': ['asana'],
+    'monday': ['monday'],
+    'clickup': ['clickup'],
+    'miro': ['miro'],
+    'figma': ['figma'],
+    'canva': ['canva'],
+
+    // Communication & Social
+    'slack': ['slack'],
+    'discord': ['discord', 'discordptb', 'discordcanary'],
+    'telegram': ['telegram'],
+    'telegram desktop': ['telegram'],
+    'whatsapp': ['whatsapp', 'whatsapp.root'],
+    'zoom': ['zoom'],
+    'zoom meetings': ['zoom'],
+    'signal': ['signal'],
+    'messenger': ['messenger'],
+    'wechat': ['wechat'],
+    'viber': ['viber'],
+    'element': ['element'],
+
+    // Audio, Video & Streaming
+    'spotify': ['spotify'],
+    'apple music': ['applemusic'],
+    'tidal': ['tidal'],
+    'vlc': ['vlc'],
+    'vlc media player': ['vlc'],
+    'windows media player': ['wmplayer'],
+    'potplayer': ['potplayer64', 'potplayer'],
+    'mpc-hc': ['mpc-hc64', 'mpc-hc'],
+    'foobar2000': ['foobar2000'],
+    'audacity': ['audacity'],
+    'fl studio': ['fl64', 'fl'],
+    'ableton live': ['ableton live 11 suite', 'ableton live 12 suite', 'live'],
+    'reaper': ['reaper'],
+    'obs studio': ['obs64', 'obs32', 'obs'],
+    'handbrake': ['handbrake'],
+    'davinci resolve': ['resolve'],
+
+    // Creative, 3D & Design
+    'adobe photoshop': ['photoshop'],
+    'photoshop': ['photoshop'],
+    'adobe illustrator': ['illustrator'],
+    'illustrator': ['illustrator'],
+    'adobe premiere pro': ['premiere'],
+    'premiere': ['premiere'],
+    'adobe after effects': ['afterfx'],
+    'after effects': ['afterfx'],
+    'adobe audition': ['audition'],
+    'adobe lightroom': ['lightroom'],
+    'adobe indesign': ['indesign'],
+    'adobe acrobat': ['acrobat', 'acrord32'],
+    'acrobat reader': ['acrobat', 'acrord32'],
+    'blender': ['blender'],
+    'autodesk maya': ['maya'],
+    'autodesk 3ds max': ['3dsmax'],
+    'autocad': ['acad'],
+    'cinema 4d': ['cinema 4d'],
+    'zbrush': ['zbrush'],
+    'unity': ['unity', 'unity editor'],
+    'unreal engine': ['unrealengine', 'unrealeditor'],
+    'godot': ['godot', 'godot_engine'],
+    'gimp': ['gimp-2.10', 'gimp'],
+    'inkscape': ['inkscape'],
+    'krita': ['krita'],
+    'paint.net': ['paintdotnet'],
+
+    // Games & Gaming Launchers
+    'steam': ['steam', 'steamwebhelper'],
+    'epic games': ['epicgameslauncher'],
+    'epic games launcher': ['epicgameslauncher'],
+    'battle.net': ['battle.net'],
+    'ea app': ['eadesktop'],
+    'origin': ['origin'],
+    'ubisoft connect': ['upc', 'ubisoftconnect'],
+    'gog galaxy': ['gog galaxy'],
+    'riot client': ['riotclientux', 'riotclientservices'],
+    'roblox': ['robloxplayerbeta'],
+    'minecraft': ['minecraft', 'javaw'],
+    'league of legends': ['leagueclient', 'leagueclientux'],
+    'valorant': ['valorant'],
+
+    // Windows Built-in Tools
     'notepad': ['notepad'],
     'calculator': ['calc', 'calculatorapp', 'calculator'],
     'paint': ['mspaint'],
     'command prompt': ['cmd'],
     'powershell': ['powershell', 'pwsh'],
-    'windows terminal': ['windowsterminal'],
-    'spotify': ['spotify'],
-    'discord': ['discord'],
-    'slack': ['slack'],
-    'vlc': ['vlc'],
-    'telegram': ['telegram'],
-    'whatsapp': ['whatsapp', 'whatsapp.root'],
-    'zoom': ['zoom']
+    'windows terminal': ['windowsterminal', 'wt'],
+    'snipping tool': ['snippingtool', 'screensketch'],
+    'task manager': ['taskmgr'],
+    'file explorer': ['explorer']
 };
 
 class NativeWindowsHelper {
@@ -59,6 +202,13 @@ class NativeWindowsHelper {
         const names = new Set();
         names.add(clean);
 
+        // Strip non-alphanumeric (e.g. "Visual Studio Code" -> "visualstudiocode", "Notepad++" -> "notepad")
+        const alpha = clean.replace(/[^a-z0-9]/g, '');
+        if (alpha && alpha.length > 2) {
+            names.add(alpha);
+        }
+
+        // Direct key lookup
         if (KNOWN_PROCESS_MAP[clean]) {
             for (const alias of KNOWN_PROCESS_MAP[clean]) {
                 names.add(alias);
@@ -67,8 +217,23 @@ class NativeWindowsHelper {
 
         // Substring / partial match on known keys
         for (const [key, aliases] of Object.entries(KNOWN_PROCESS_MAP)) {
-            if (clean.includes(key) || key.includes(clean)) {
+            if (clean === key || clean.includes(key) || key.includes(clean)) {
                 for (const a of aliases) names.add(a);
+            }
+            const keyAlpha = key.replace(/[^a-z0-9]/g, '');
+            if (alpha && keyAlpha && (alpha.includes(keyAlpha) || keyAlpha.includes(alpha))) {
+                for (const a of aliases) names.add(a);
+            }
+        }
+
+        // Add first word token (e.g. "Obsidian v1.4" -> "obsidian", "PyCharm Community" -> "pycharm")
+        const firstWord = clean.split(/[\s\-_]+/)[0];
+        if (firstWord && firstWord.length > 2) {
+            names.add(firstWord);
+            if (KNOWN_PROCESS_MAP[firstWord]) {
+                for (const alias of KNOWN_PROCESS_MAP[firstWord]) {
+                    names.add(alias);
+                }
             }
         }
 
@@ -218,12 +383,16 @@ if ($h -ne [IntPtr]::Zero) {
             for (const proc of runningProcs) {
                 const procLower = (proc.name || '').toLowerCase();
                 const titleLower = (proc.title || '').toLowerCase();
+                const procAlpha = procLower.replace(/[^a-z0-9]/g, '');
 
                 for (const alias of aliases) {
                     const aliasLower = alias.toLowerCase();
+                    const aliasAlpha = aliasLower.replace(/[^a-z0-9]/g, '');
+
                     if (procLower === aliasLower ||
                         procLower.includes(aliasLower) ||
                         aliasLower.includes(procLower) ||
+                        (procAlpha && aliasAlpha && (procAlpha.includes(aliasAlpha) || aliasAlpha.includes(procAlpha))) ||
                         (titleLower && titleLower.includes(aliasLower))) {
                         return true;
                     }
@@ -277,7 +446,7 @@ if ($h -ne [IntPtr]::Zero) {
             ]);
 
             for (const alias of aliases) {
-                if (!protectedNames.has(alias)) {
+                if (!protectedNames.has(alias.toLowerCase())) {
                     try {
                         await execPromise(`taskkill /F /IM "${alias}.exe" /T`, { timeout: 1000 }).catch(() => {});
                     } catch (e) {}

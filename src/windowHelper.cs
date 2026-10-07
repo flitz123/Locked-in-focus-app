@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace LockedInFocusHelper {
     class Program {
@@ -32,6 +33,9 @@ namespace LockedInFocusHelper {
 
         [DllImport("user32.dll")]
         public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
         [DllImport("kernel32.dll")]
         public static extern uint GetCurrentThreadId();
@@ -171,7 +175,10 @@ namespace LockedInFocusHelper {
         static void ForceForeground(IntPtr hWnd) {
             if (hWnd == IntPtr.Zero) return;
             try {
+                // Windows lock bypass
+                keybd_event(0, 0, 0, UIntPtr.Zero);
                 ShowWindow(hWnd, SW_RESTORE);
+
                 IntPtr fgWnd = GetForegroundWindow();
                 uint fgThread = 0;
                 if (fgWnd != IntPtr.Zero) {
@@ -194,14 +201,57 @@ namespace LockedInFocusHelper {
             }
         }
 
+        static string CleanQuery(string q) {
+            if (string.IsNullOrWhiteSpace(q)) return "";
+            string clean = q.Trim().ToLowerInvariant();
+            if (clean.EndsWith(".exe")) clean = clean.Substring(0, clean.Length - 4);
+            return clean;
+        }
+
+        static string AlphaNumericOnly(string s) {
+            if (string.IsNullOrEmpty(s)) return "";
+            return Regex.Replace(s.ToLowerInvariant(), @"[^a-z0-9]", "");
+        }
+
+        static bool MatchesString(string target, string procName, string title, string path) {
+            string q = CleanQuery(target);
+            if (string.IsNullOrEmpty(q)) return false;
+
+            string pName = CleanQuery(procName);
+            string pTitle = (title ?? "").ToLowerInvariant();
+            string pPath = (path ?? "").ToLowerInvariant();
+
+            // 1. Direct equality / substring
+            if (!string.IsNullOrEmpty(pName)) {
+                if (pName == q || pName.Contains(q) || q.Contains(pName)) return true;
+            }
+
+            // 2. Alphanumeric stripped match (e.g. "visualstudiocode" matches "code", "pycharm64" matches "pycharm")
+            string qAlpha = AlphaNumericOnly(q);
+            string pAlpha = AlphaNumericOnly(pName);
+            if (!string.IsNullOrEmpty(qAlpha) && !string.IsNullOrEmpty(pAlpha)) {
+                if (qAlpha == pAlpha || qAlpha.Contains(pAlpha) || pAlpha.Contains(qAlpha)) return true;
+            }
+
+            // 3. Title match
+            if (!string.IsNullOrEmpty(pTitle)) {
+                if (pTitle.Contains(q) || (!string.IsNullOrEmpty(qAlpha) && AlphaNumericOnly(pTitle).Contains(qAlpha))) return true;
+            }
+
+            // 4. Path match
+            if (!string.IsNullOrEmpty(pPath)) {
+                if (pPath.Contains(q) || (!string.IsNullOrEmpty(qAlpha) && AlphaNumericOnly(pPath).Contains(qAlpha))) return true;
+            }
+
+            return false;
+        }
+
         static void ActivateApp(string query) {
             if (string.IsNullOrWhiteSpace(query)) {
                 Console.WriteLine("false");
                 return;
             }
 
-            string q = query.Trim().ToLowerInvariant();
-            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             bool activated = false;
 
             try {
@@ -209,21 +259,22 @@ namespace LockedInFocusHelper {
                     if (IsWindowVisible(hwnd)) {
                         StringBuilder sb = new StringBuilder(512);
                         GetWindowText(hwnd, sb, 512);
-                        string title = sb.ToString().ToLowerInvariant();
+                        string title = sb.ToString();
 
                         uint pid = 0;
                         GetWindowThreadProcessId(hwnd, out pid);
                         string procName = "";
+                        string procPath = "";
 
                         if (pid > 0) {
                             try {
                                 Process p = Process.GetProcessById((int)pid);
-                                procName = p.ProcessName.ToLowerInvariant();
+                                procName = p.ProcessName;
+                                try { procPath = p.MainModule.FileName; } catch { }
                             } catch { }
                         }
 
-                        if ((procName.Length > 0 && (procName == q || procName.Contains(q) || q.Contains(procName))) ||
-                            (title.Length > 0 && (title.Contains(q) || q.Contains(title)))) {
+                        if (MatchesString(query, procName, title, procPath)) {
                             ForceForeground(hwnd);
                             activated = true;
                             return false; // Stop enumerating
@@ -242,29 +293,21 @@ namespace LockedInFocusHelper {
                 return;
             }
 
-            string q = query.Trim().ToLowerInvariant();
-            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             int count = 0;
 
             try {
                 Process[] processes = Process.GetProcesses();
                 foreach (Process p in processes) {
                     try {
-                        string name = p.ProcessName.ToLowerInvariant();
+                        string name = p.ProcessName;
                         if (IsProtectedProcess(name)) continue;
 
                         string title = "";
-                        try { title = p.MainWindowTitle.ToLowerInvariant(); } catch { }
+                        try { title = p.MainWindowTitle; } catch { }
                         string path = "";
-                        try { path = p.MainModule.FileName.ToLowerInvariant(); } catch { }
+                        try { path = p.MainModule.FileName; } catch { }
 
-                        bool matches = false;
-                        if (name == q) matches = true;
-                        else if (name.Contains(q) || q.Contains(name)) matches = true;
-                        else if (!string.IsNullOrEmpty(title) && title.Contains(q)) matches = true;
-                        else if (!string.IsNullOrEmpty(path) && path.Contains(q)) matches = true;
-
-                        if (matches) {
+                        if (MatchesString(query, name, title, path)) {
                             p.Kill();
                             count++;
                         }
@@ -281,23 +324,19 @@ namespace LockedInFocusHelper {
                 return;
             }
 
-            string q = query.Trim().ToLowerInvariant();
-            if (q.EndsWith(".exe")) q = q.Substring(0, q.Length - 4);
             bool running = false;
 
             try {
                 Process[] processes = Process.GetProcesses();
                 foreach (Process p in processes) {
                     try {
-                        string name = p.ProcessName.ToLowerInvariant();
+                        string name = p.ProcessName;
                         string title = "";
-                        try { title = p.MainWindowTitle.ToLowerInvariant(); } catch { }
+                        try { title = p.MainWindowTitle; } catch { }
                         string path = "";
-                        try { path = p.MainModule.FileName.ToLowerInvariant(); } catch { }
+                        try { path = p.MainModule.FileName; } catch { }
 
-                        if (name == q || name.Contains(q) || q.Contains(name) ||
-                            (!string.IsNullOrEmpty(title) && title.Contains(q)) ||
-                            (!string.IsNullOrEmpty(path) && path.Contains(q))) {
+                        if (MatchesString(query, name, title, path)) {
                             running = true;
                             break;
                         }

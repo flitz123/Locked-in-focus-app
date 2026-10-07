@@ -170,6 +170,14 @@ function setupIpcHandlers() {
         return await focusManager.saveData();
     });
 
+    ipcMain.handle('get-settings', async (event) => {
+        return focusManager.getSettings();
+    });
+
+    ipcMain.handle('save-settings', async (event, settings) => {
+        return await focusManager.saveSettings(settings);
+    });
+
     // Dialogs
     ipcMain.handle('show-open-dialog', async (event, options) => {
         return await dialog.showOpenDialog(mainWindow, options || {

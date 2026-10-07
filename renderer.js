@@ -225,10 +225,30 @@ class FocusAppRenderer {
         ipcRenderer.on('app-approval-request', (event, data) => {
             this.showAppApprovalModal(data);
         });
+
+        ipcRenderer.on('desktop-notification', (event, notif) => {
+            this.showNotification(notif.body || notif.title, notif.type || 'info');
+        });
     }
 
     async loadInitialData() {
         try {
+            // Load saved settings
+            const settings = await ipcRenderer.invoke('get-settings');
+            if (settings) {
+                const intervalEl = document.getElementById('checkInterval');
+                if (intervalEl && settings.checkInterval) intervalEl.value = settings.checkInterval;
+
+                const modeEl = document.getElementById('focusMode');
+                if (modeEl && settings.focusMode) modeEl.value = settings.focusMode;
+
+                const notifEl = document.getElementById('notifications');
+                if (notifEl && settings.notifications !== undefined) notifEl.checked = settings.notifications;
+
+                const autoEl = document.getElementById('autoStart');
+                if (autoEl && settings.autoStart !== undefined) autoEl.checked = settings.autoStart;
+            }
+
             // Load app lists
             const appLists = await ipcRenderer.invoke('get-app-lists');
             this.selectedApps = new Set(appLists.selectedApps || []);
@@ -305,10 +325,16 @@ class FocusAppRenderer {
         const sessionNameInput = document.getElementById('sessionName');
         const sessionName = (sessionNameInput && sessionNameInput.value.trim()) || 'Deep Focus Session';
         const checkInterval = parseInt(document.getElementById('checkInterval') ? document.getElementById('checkInterval').value : 1500) || 1500;
+        const focusMode = document.getElementById('focusMode') ? document.getElementById('focusMode').value : 'moderate';
+        const notifications = document.getElementById('notifications') ? document.getElementById('notifications').checked : true;
+        const autoStart = document.getElementById('autoStart') ? document.getElementById('autoStart').checked : false;
 
         const settings = {
             name: sessionName,
-            checkInterval: checkInterval
+            checkInterval: checkInterval,
+            focusMode: focusMode,
+            notifications: notifications,
+            autoStart: autoStart
         };
 
         try {
@@ -617,6 +643,7 @@ class FocusAppRenderer {
                 this.showNotification(`Added "${appName}" to ${category} applications`, 'success');
                 this.updateUI();
                 this.filterDetectedApps(document.getElementById('searchApps') ? document.getElementById('searchApps').value : '');
+                this.filterPackageList(document.getElementById('searchPackages') ? document.getElementById('searchPackages').value : '');
             } else {
                 this.showNotification(`Could not add app: ${result.error}`, 'error');
             }
@@ -635,6 +662,7 @@ class FocusAppRenderer {
                 this.showNotification(`Removed "${appName}"`, 'info');
                 this.updateUI();
                 this.filterDetectedApps(document.getElementById('searchApps') ? document.getElementById('searchApps').value : '');
+                this.filterPackageList(document.getElementById('searchPackages') ? document.getElementById('searchPackages').value : '');
             } else {
                 this.showNotification(`Error removing app: ${result.error}`, 'error');
             }
@@ -1022,6 +1050,14 @@ class FocusAppRenderer {
     }
 
     showNotification(message, type = 'info') {
+        const now = Date.now();
+        if (!this.lastToastTimes) this.lastToastTimes = new Map();
+        const lastTime = this.lastToastTimes.get(message) || 0;
+        if (now - lastTime < 3000) {
+            return; // Ignore duplicate toast within 3s
+        }
+        this.lastToastTimes.set(message, now);
+
         const existing = document.querySelectorAll('.app-toast');
         existing.forEach(t => t.remove());
 
@@ -1115,8 +1151,23 @@ class FocusAppRenderer {
         this.showNotification('Data exported to JSON file', 'success');
     }
 
-    saveSettings() {
-        this.showNotification('Preferences saved successfully!', 'success');
+    async saveSettings() {
+        const checkInterval = parseInt(document.getElementById('checkInterval')?.value || 1500, 10) || 1500;
+        const focusMode = document.getElementById('focusMode')?.value || 'moderate';
+        const notifications = document.getElementById('notifications')?.checked !== false;
+        const autoStart = !!document.getElementById('autoStart')?.checked;
+
+        const settings = { checkInterval, focusMode, notifications, autoStart };
+        try {
+            const res = await ipcRenderer.invoke('save-settings', settings);
+            if (res && res.success) {
+                this.showNotification('Preferences & Focus Engine settings saved successfully!', 'success');
+            } else {
+                this.showNotification(`Error saving settings: ${res ? res.error : 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            this.showNotification(`Error: ${err.message}`, 'error');
+        }
     }
 }
 
