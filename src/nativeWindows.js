@@ -5,6 +5,7 @@ const fs = require('fs');
 
 const execPromise = util.promisify(exec);
 const execFilePromise = util.promisify(execFile);
+const GENERIC_PROCESS_ALIASES = new Set(['javaw', 'msedgewebview2', 'dockerd']);
 
 // Path to compiled C# Win32 helper executable
 const HELPER_EXE_PATH = path.join(__dirname, 'windowHelper.exe');
@@ -20,8 +21,8 @@ const KNOWN_PROCESS_MAP = {
     'firefox': ['firefox'],
     'brave': ['brave'],
     'brave browser': ['brave'],
-    'opera': ['opera', 'launcher'],
-    'opera gx': ['opera', 'launcher'],
+    'opera': ['opera'],
+    'opera gx': ['opera'],
     'vivaldi': ['vivaldi'],
     'arc': ['arc'],
     'tor browser': ['tor', 'firefox'],
@@ -30,7 +31,7 @@ const KNOWN_PROCESS_MAP = {
     'waterfox': ['waterfox'],
 
     // Microsoft Office & Productivity
-    'microsoft word': ['winword', 'word'],
+    'microsoft word': ['winword'],
     'word': ['winword'],
     'microsoft excel': ['excel'],
     'excel': ['excel'],
@@ -217,11 +218,11 @@ class NativeWindowsHelper {
 
         // Substring / partial match on known keys
         for (const [key, aliases] of Object.entries(KNOWN_PROCESS_MAP)) {
-            if (clean === key || clean.includes(key) || key.includes(clean)) {
+            if (clean === key || (key.length >= 8 && clean.startsWith(`${key} `))) {
                 for (const a of aliases) names.add(a);
             }
             const keyAlpha = key.replace(/[^a-z0-9]/g, '');
-            if (alpha && keyAlpha && (alpha.includes(keyAlpha) || keyAlpha.includes(alpha))) {
+            if (keyAlpha.length >= 8 && alpha.startsWith(keyAlpha)) {
                 for (const a of aliases) names.add(a);
             }
         }
@@ -230,14 +231,24 @@ class NativeWindowsHelper {
         const firstWord = clean.split(/[\s\-_]+/)[0];
         if (firstWord && firstWord.length > 2) {
             names.add(firstWord);
-            if (KNOWN_PROCESS_MAP[firstWord]) {
-                for (const alias of KNOWN_PROCESS_MAP[firstWord]) {
-                    names.add(alias);
-                }
-            }
         }
 
         return Array.from(names);
+    }
+
+    static isGenericProcessName(processName) {
+        return GENERIC_PROCESS_ALIASES.has((processName || '').toLowerCase());
+    }
+
+    static getPreferredProcessNames(appName) {
+        const clean = (appName || '').toLowerCase().replace(/\.exe$/i, '').trim();
+        const exactAliases = KNOWN_PROCESS_MAP[clean];
+        if (exactAliases) return exactAliases;
+
+        for (const [key, aliases] of Object.entries(KNOWN_PROCESS_MAP)) {
+            if (key.length >= 8 && clean.startsWith(`${key} `)) return aliases;
+        }
+        return [];
     }
 
     static async getForegroundWindow() {
@@ -356,16 +367,34 @@ if ($h -ne [IntPtr]::Zero) {
         if (!appNameOrProcess) return false;
 
         const aliases = this.getKnownProcessNames(appNameOrProcess);
+        const preferredAliases = this.getPreferredProcessNames(appNameOrProcess);
+        const specificAliases = (preferredAliases.length ? preferredAliases : aliases)
+            .filter(alias => !GENERIC_PROCESS_ALIASES.has(alias.toLowerCase()));
 
         // 1. Try C# helper first with AttachThreadInput + SetForegroundWindow
         if (fs.existsSync(HELPER_EXE_PATH)) {
-            for (const alias of aliases) {
+            for (const alias of specificAliases) {
                 try {
                     const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['activate', alias], { timeout: 1200 });
                     if (stdout && stdout.trim() === 'true') {
                         return true;
                     }
                 } catch (e) {}
+            }
+
+            const genericAliases = aliases.filter(alias => GENERIC_PROCESS_ALIASES.has(alias.toLowerCase()));
+            if (genericAliases.length > 0) {
+                const runningProcs = await this.getRunningProcesses();
+                const hasMatchingWindow = runningProcs.some(proc =>
+                    genericAliases.includes((proc.name || '').toLowerCase()) &&
+                    this.titleMatchesApp(proc.title || '', appNameOrProcess)
+                );
+                if (hasMatchingWindow) {
+                    try {
+                        const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['activate', appNameOrProcess], { timeout: 1200 });
+                        if (stdout && stdout.trim() === 'true') return true;
+                    } catch (e) {}
+                }
             }
         }
 
@@ -390,10 +419,11 @@ if ($h -ne [IntPtr]::Zero) {
                     const aliasAlpha = aliasLower.replace(/[^a-z0-9]/g, '');
 
                     if (procLower === aliasLower ||
-                        procLower.includes(aliasLower) ||
-                        aliasLower.includes(procLower) ||
-                        (procAlpha && aliasAlpha && (procAlpha.includes(aliasAlpha) || aliasAlpha.includes(procAlpha))) ||
-                        (titleLower && titleLower.includes(aliasLower))) {
+                        (procAlpha && aliasAlpha && procAlpha === aliasAlpha)) {
+                        if (GENERIC_PROCESS_ALIASES.has(aliasLower) &&
+                            !this.titleMatchesApp(titleLower, appNameOrProcess)) {
+                            continue;
+                        }
                         return true;
                     }
                 }
@@ -401,9 +431,26 @@ if ($h -ne [IntPtr]::Zero) {
             return false;
         }
 
+        const genericAliases = aliases.filter(alias => GENERIC_PROCESS_ALIASES.has(alias.toLowerCase()));
+        if (genericAliases.length > 0) {
+            const runningProcs = await this.getRunningProcesses();
+            if (runningProcs.some(proc =>
+                genericAliases.includes((proc.name || '').toLowerCase()) &&
+                this.titleMatchesApp(proc.title || '', appNameOrProcess)
+            )) {
+                return true;
+            }
+        }
+
         // Fast check via helper
         if (fs.existsSync(HELPER_EXE_PATH)) {
-            for (const alias of aliases) {
+            const processNames = Array.from(new Set([
+                ...(this.getPreferredProcessNames(appNameOrProcess).length
+                    ? this.getPreferredProcessNames(appNameOrProcess)
+                    : aliases)
+            ]));
+            for (const alias of processNames) {
+                if (GENERIC_PROCESS_ALIASES.has(alias.toLowerCase())) continue;
                 try {
                     const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['is-running', alias], { timeout: 1200 });
                     if (stdout && stdout.trim() === 'true') {
@@ -422,39 +469,46 @@ if ($h -ne [IntPtr]::Zero) {
 
         const aliases = this.getKnownProcessNames(appNameOrProcess);
         let killedAny = false;
+        const runningProcs = await this.getRunningProcesses();
+        const protectedNames = new Set([
+            'electron', 'locked-in', 'locked-in focus app', 'antigravity ide',
+            'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon', 'dwm',
+            'svchost', 'taskhostw', 'sihost', 'system', 'idle', 'runtimebroker',
+            'shellexperiencehost', 'searchapp', 'textinputhost', 'conhost', 'node'
+        ]);
 
-        // 1. Use C# helper (instant termination without spawning taskkill/cmd)
-        if (fs.existsSync(HELPER_EXE_PATH)) {
-            for (const alias of aliases) {
-                try {
-                    const { stdout } = await execFilePromise(HELPER_EXE_PATH, ['kill', alias], { timeout: 1500 });
-                    if (stdout && parseInt(stdout.trim(), 10) > 0) {
+        for (const alias of aliases) {
+            if (protectedNames.has(alias.toLowerCase())) continue;
+            try {
+                if (GENERIC_PROCESS_ALIASES.has(alias.toLowerCase())) {
+                    const matchedPids = runningProcs
+                        .filter(proc =>
+                            (proc.name || '').toLowerCase() === alias.toLowerCase() &&
+                            proc.pid &&
+                            this.titleMatchesApp((proc.title || '').toLowerCase(), appNameOrProcess))
+                        .map(proc => proc.pid);
+                    for (const pid of matchedPids) {
+                        await execFilePromise('taskkill.exe', ['/F', '/PID', String(pid), '/T'], { timeout: 1000 });
                         killedAny = true;
                     }
-                } catch (e) {}
-            }
-        }
-
-        // 2. Fallback: taskkill for any lingering processes
-        if (!killedAny) {
-            const protectedNames = new Set([
-                'electron', 'locked-in', 'locked-in focus app', 'antigravity ide',
-                'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon', 'dwm',
-                'svchost', 'taskhostw', 'sihost', 'system', 'idle', 'runtimebroker',
-                'shellexperiencehost', 'searchapp', 'textinputhost', 'cmd', 'powershell',
-                'conhost', 'node'
-            ]);
-
-            for (const alias of aliases) {
-                if (!protectedNames.has(alias.toLowerCase())) {
-                    try {
-                        await execPromise(`taskkill /F /IM "${alias}.exe" /T`, { timeout: 1000 }).catch(() => {});
-                    } catch (e) {}
+                } else {
+                    await execFilePromise('taskkill.exe', ['/F', '/IM', `${alias}.exe`, '/T'], { timeout: 1000 });
+                    killedAny = true;
                 }
+            } catch (e) {
+                // The process may have exited between the running-process check and this call.
             }
         }
 
         return killedAny;
+    }
+
+    static titleMatchesApp(title, appName) {
+        const normalizedTitle = (title || '').toLowerCase();
+        const normalizedName = (appName || '').toLowerCase().replace(/\.exe$/i, '').trim();
+        if (normalizedName.length < 3) return false;
+        const escapedName = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(^|[^a-z0-9])${escapedName}([^a-z0-9]|$)`, 'i').test(normalizedTitle);
     }
 
     static async launchApp(appNameOrPath) {

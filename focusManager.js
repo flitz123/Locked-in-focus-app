@@ -21,6 +21,8 @@ class FocusManager {
         this.sessionStats = [];
         this.pendingApprovals = new Map();
         this.appScanner = new AppScanner();
+        this.temporaryAllowedApps = new Set();
+        this.moderateAttempts = new Set();
 
         // User Settings / Preferences
         this.settings = {
@@ -32,6 +34,7 @@ class FocusManager {
 
         // Launch cooldown map to prevent endless spawn loops
         this.launchCooldowns = new Map();
+        this.launchFailureNotifications = new Set();
         this.isChecking = false;
 
         // Notification anti-loop tracking
@@ -99,21 +102,32 @@ class FocusManager {
         }
 
         const activeProcAlpha = this.alphaNumericOnly(activeProcName);
-        const activeTitleAlpha = this.alphaNumericOnly(activeTitle);
-        const activePathAlpha = this.alphaNumericOnly(activePath);
+        const activePathName = this.normalizeName(path.basename(activePath));
+        const activePathAlpha = this.alphaNumericOnly(activePathName);
+        const titleHasName = (name) => {
+            if (!name || name.length < 3) return false;
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(activeTitle);
+        };
 
-        // 1. Direct name equality / substring
+        // Process identity should be exact to avoid matching unrelated apps.
         if (activeProcName) {
-            if (activeProcName === targetNorm || activeProcName.includes(targetNorm) || targetNorm.includes(activeProcName)) {
+            if (activeProcName === targetNorm) {
                 return true;
             }
         }
 
-        // 2. Alphanumeric stripped match (e.g. "visualstudiocode" matches "code", "pycharm64" matches "pycharm")
+        // Alphanumeric equality handles punctuation in configured names.
         if (targetAlpha && activeProcAlpha) {
-            if (activeProcAlpha === targetAlpha || activeProcAlpha.includes(targetAlpha) || targetAlpha.includes(activeProcAlpha)) {
+            if (activeProcAlpha === targetAlpha) {
                 return true;
             }
+        }
+        if (activePathName && activePathName === targetNorm) {
+            return true;
+        }
+        if (targetAlpha && activePathAlpha && activePathAlpha === targetAlpha) {
+            return true;
         }
 
         // 3. Known process aliases for target app
@@ -121,18 +135,23 @@ class FocusManager {
         for (const alias of knownAliases) {
             const aliasNorm = this.normalizeName(alias);
             const aliasAlpha = this.alphaNumericOnly(aliasNorm);
+            const isGenericProcess = NativeWindows.isGenericProcessName &&
+                NativeWindows.isGenericProcessName(aliasNorm);
 
-            if (activeProcName && (activeProcName === aliasNorm || activeProcName.includes(aliasNorm) || aliasNorm.includes(activeProcName))) {
-                return true;
+            if (activeProcName && activeProcName === aliasNorm) {
+                if (!isGenericProcess || titleHasName(targetNorm) || titleHasName(targetAlpha)) {
+                    return true;
+                }
             }
-            if (aliasAlpha && activeProcAlpha && (activeProcAlpha === aliasAlpha || activeProcAlpha.includes(aliasAlpha) || aliasAlpha.includes(activeProcAlpha))) {
-                return true;
+            if (aliasAlpha && activeProcAlpha && activeProcAlpha === aliasAlpha) {
+                if (!isGenericProcess || titleHasName(targetNorm) || titleHasName(targetAlpha)) {
+                    return true;
+                }
             }
-            if (activeTitle && activeTitle.includes(aliasNorm)) {
-                return true;
-            }
-            if (activePath && activePath.includes(aliasNorm)) {
-                return true;
+            if (activePathName && (activePathName === aliasNorm || activePathAlpha === aliasAlpha)) {
+                if (!isGenericProcess || titleHasName(targetNorm) || titleHasName(targetAlpha)) {
+                    return true;
+                }
             }
         }
 
@@ -142,10 +161,10 @@ class FocusManager {
             if (cached) {
                 const exeBase = this.normalizeName(path.basename(cached));
                 const exeAlpha = this.alphaNumericOnly(exeBase);
-                if (exeBase && activeProcName && (activeProcName === exeBase || activeProcName.includes(exeBase) || exeBase.includes(activeProcName))) {
+                if (exeBase && activeProcName && activeProcName === exeBase) {
                     return true;
                 }
-                if (exeAlpha && activeProcAlpha && (activeProcAlpha === exeAlpha || activeProcAlpha.includes(exeAlpha) || exeAlpha.includes(activeProcAlpha))) {
+                if (exeAlpha && activeProcAlpha && exeAlpha === activeProcAlpha) {
                     return true;
                 }
             }
@@ -153,17 +172,7 @@ class FocusManager {
 
         // 5. Window title matching
         if (activeTitle) {
-            if (activeTitle.includes(targetNorm) || (targetNorm.length > 3 && targetNorm.includes(activeTitle))) {
-                return true;
-            }
-            if (targetAlpha && targetAlpha.length > 3 && activeTitleAlpha.includes(targetAlpha)) {
-                return true;
-            }
-        }
-
-        // 6. Active path matching
-        if (activePath) {
-            if (activePath.includes(targetNorm) || (targetAlpha && targetAlpha.length > 3 && activePathAlpha.includes(targetAlpha))) {
+            if (titleHasName(targetNorm) || (targetAlpha && titleHasName(targetAlpha))) {
                 return true;
             }
         }
@@ -345,6 +354,12 @@ class FocusManager {
             return { success: false, error: 'Please select at least one application before starting the focus session' };
         }
 
+        const hasFocusableApp = [...this.selectedApps, ...this.allowedApps]
+            .some(appName => !this.isAppBlocked(appName));
+        if (!hasFocusableApp) {
+            return { success: false, error: 'All selected and allowed applications are blocked' };
+        }
+
         try {
             // Merge session settings with stored preferences
             const mergedSettings = Object.assign({}, this.settings, settings);
@@ -358,10 +373,17 @@ class FocusManager {
             this.distractionApps.clear();
             this.appUsageTime.clear();
             this.launchCooldowns.clear();
+            this.launchFailureNotifications.clear();
+            this.temporaryAllowedApps.clear();
+            this.moderateAttempts.clear();
             this.notificationCooldowns.clear();
             this.lastGlobalNotificationTime = 0;
             this.currentActiveApp = null;
             this.lastActiveAppName = null;
+
+            if (!['aggressive', 'moderate', 'lenient'].includes(mergedSettings.focusMode)) {
+                mergedSettings.focusMode = 'moderate';
+            }
 
             this.currentSession = {
                 id: Date.now().toString(),
@@ -432,6 +454,9 @@ class FocusManager {
             }
 
             this.launchCooldowns.clear();
+            this.launchFailureNotifications.clear();
+            this.temporaryAllowedApps.clear();
+            this.moderateAttempts.clear();
 
             const sessionEndTime = Date.now();
             const totalDuration = Math.max(1, Math.round((sessionEndTime - this.sessionStartTime) / 1000));
@@ -543,12 +568,14 @@ class FocusManager {
                         if (isRunning) {
                             if (mode === 'aggressive' || mode === 'moderate') {
                                 console.log(`[Safe Lock] Terminating running blocked app: ${blockedApp}`);
-                                await NativeWindows.killProcess(blockedApp);
+                                const terminated = await NativeWindows.killProcess(blockedApp);
 
                                 if (notificationsEnabled) {
                                     this.sendDesktopNotification(
-                                        'Blocked App Terminated',
-                                        `"${blockedApp}" was running in the background and has been closed.`,
+                                        terminated ? 'Blocked App Terminated' : 'Blocked App Still Running',
+                                        terminated
+                                            ? `"${blockedApp}" was running in the background and has been closed.`
+                                            : `"${blockedApp}" could not be closed. Focus enforcement will continue.`,
                                         { appKey: blockedApp, type: 'error' }
                                     );
                                 }
@@ -557,20 +584,45 @@ class FocusManager {
                     }
                 }
 
-                // 3. SELECTED APPS AUTO-REOPEN ENFORCEMENT (with anti-loop cooldown guard)
-                const COOLDOWN_MS = 10000; // 10s cooldown
+                // 3. SELECTED APPS AUTO-REOPEN ENFORCEMENT (bounded retry with backoff)
+                const BASE_RETRY_MS = 10000;
+                const MAX_RETRIES = 3;
                 for (const selectedApp of this.selectedApps) {
                     const norm = this.normalizeName(selectedApp);
+                    if (this.isAppBlocked(selectedApp)) {
+                        this.launchCooldowns.delete(norm);
+                        this.launchFailureNotifications.delete(norm);
+                        continue;
+                    }
                     const isRunning = await NativeWindows.isProcessRunning(selectedApp, runningProcs);
 
                     if (isRunning) {
                         this.launchCooldowns.delete(norm);
+                        this.launchFailureNotifications.delete(norm);
                     } else {
-                        const lastLaunch = this.launchCooldowns.get(norm) || 0;
-                        if (now - lastLaunch > COOLDOWN_MS) {
+                        const launchState = this.launchCooldowns.get(norm) || { lastLaunch: 0, attempts: 0 };
+                        const cooldownMs = BASE_RETRY_MS * (2 ** Math.max(0, launchState.attempts - 1));
+                        if (launchState.attempts < MAX_RETRIES && now - launchState.lastLaunch >= cooldownMs) {
                             console.log(`[Safe Lock] Selected app closed (${selectedApp}). Relaunching...`);
-                            this.launchCooldowns.set(norm, now);
-                            await this.openApp(selectedApp);
+                            this.launchCooldowns.set(norm, { lastLaunch: now, attempts: launchState.attempts + 1 });
+                            const launched = await this.openApp(selectedApp);
+                            if (!launched) {
+                                console.warn(`Could not relaunch selected app ${selectedApp}`);
+                            }
+                        } else if (
+                            launchState.attempts >= MAX_RETRIES &&
+                            now - launchState.lastLaunch >= cooldownMs &&
+                            !this.launchFailureNotifications.has(norm)
+                        ) {
+                            this.launchFailureNotifications.add(norm);
+                            console.warn(`Relaunch paused after ${MAX_RETRIES} attempts for selected app ${selectedApp}`);
+                            if (notificationsEnabled) {
+                                this.sendDesktopNotification(
+                                    'Selected App Could Not Be Reopened',
+                                    `"${selectedApp}" did not start after several attempts. Open it manually to resume automatic monitoring.`,
+                                    { appKey: 'reopen_failed_' + norm, type: 'error' }
+                                );
+                            }
                         }
                     }
                 }
@@ -582,6 +634,7 @@ class FocusManager {
 
                 const matchedSelected = this.findMatchingAppInSet(this.selectedApps, activeApp || activeName);
                 const matchedAllowed = this.findMatchingAppInSet(this.allowedApps, activeApp || activeName);
+                const matchedTemporaryAllowed = this.findMatchingAppInSet(this.temporaryAllowedApps, activeApp || activeName);
                 const matchedBlocked = this.findMatchingAppInSet(this.blockedApps, activeApp || activeName);
 
                 // Windows system shell processes that shouldn't trigger distraction
@@ -608,9 +661,6 @@ class FocusManager {
                     console.log(`[Focus Enforcement] Blocked app active (${distractionName}) in mode: ${mode}`);
 
                     if (mode === 'aggressive' || mode === 'moderate') {
-                        if (activeApp && activeApp.name) {
-                            await NativeWindows.killProcess(activeApp.name);
-                        }
                         await NativeWindows.killProcess(matchedBlocked);
                         await this.bringSelectedAppsToForeground();
                     }
@@ -626,10 +676,12 @@ class FocusManager {
 
                     this.sendFocusUpdate(distractionName, 'blocked');
 
-                } else if (matchedSelected || matchedAllowed || isSelf) {
+                } else if (matchedSelected || matchedAllowed || matchedTemporaryAllowed || isSelf) {
                     // USER IS FOCUSED ON SELECTED OR ALLOWED APP
                     this.focusedTime += deltaSeconds;
-                    const displayName = isSelf ? (Array.from(this.selectedApps)[0] || 'Focus App') : (matchedSelected || matchedAllowed || activeName);
+                    const displayName = isSelf
+                        ? (Array.from(this.selectedApps)[0] || 'Focus App')
+                        : (matchedSelected || matchedAllowed || matchedTemporaryAllowed || activeName);
                     this.currentActiveApp = displayName;
 
                     const currentUsage = this.appUsageTime.get(displayName) || 0;
@@ -641,55 +693,79 @@ class FocusManager {
                     // Shell taskbar navigation, ignore
                 } else {
                     // USER SWITCHED TO UNAUTHORIZED APP (DISTRACTION)
-                    this.distractedTime += deltaSeconds;
                     const distractionName = activeName || 'Unauthorized Window';
                     this.currentActiveApp = distractionName;
+                    const attemptKey = this.normalizeName(distractionName);
+                    const previousAttempt = this.moderateAttempts.has(attemptKey);
+                    const moderateRetry = mode === 'moderate' &&
+                        isNewDistraction &&
+                        previousAttempt;
 
-                    if (isNewDistraction) {
-                        this.blockedAttempts++;
-                    }
+                    if (moderateRetry) {
+                        this.temporaryAllowedApps.add(distractionName);
+                        this.moderateAttempts.delete(attemptKey);
+                        this.focusedTime += deltaSeconds;
+                        const currentUsage = this.appUsageTime.get(distractionName) || 0;
+                        this.appUsageTime.set(distractionName, currentUsage + deltaSeconds);
 
-                    const distData = this.distractionApps.get(distractionName) || { timeSpent: 0, attempts: 0 };
-                    distData.timeSpent += deltaSeconds;
-                    if (isNewDistraction) {
-                        distData.attempts += 1;
-                    }
-                    this.distractionApps.set(distractionName, distData);
-
-                    const firstSelected = Array.from(this.selectedApps)[0] || 'Selected Task';
-
-                    if (mode === 'aggressive') {
-                        // Aggressive: Immediate refocus
-                        await this.bringSelectedAppsToForeground();
-                        if (notificationsEnabled && isNewDistraction) {
+                        if (notificationsEnabled) {
                             this.sendDesktopNotification(
-                                'Focus Restored (Aggressive)',
-                                `Redirected from "${distractionName}" back to ${firstSelected}.`,
-                                { appKey: 'distraction_' + distractionName, type: 'warning' }
+                                'App Allowed Until Session Ends',
+                                `"${distractionName}" is temporarily allowed for this focus session.`,
+                                { appKey: 'moderate_allowed_' + attemptKey, type: 'info' }
                             );
                         }
-                    } else if (mode === 'moderate') {
-                        // Moderate: Standard refocus & notification
-                        if (notificationsEnabled && isNewDistraction) {
-                            this.sendDesktopNotification(
-                                'Focus Alert (Moderate Mode)',
-                                `You navigated to "${distractionName}". Returning to ${firstSelected}!`,
-                                { appKey: 'distraction_' + distractionName, type: 'warning' }
-                            );
+                        this.sendFocusUpdate(distractionName, 'focused');
+                    } else {
+                        this.distractedTime += deltaSeconds;
+                        if (isNewDistraction) {
+                            this.blockedAttempts++;
                         }
-                        await this.bringSelectedAppsToForeground();
-                    } else if (mode === 'lenient') {
-                        // Lenient: Stats logging + reminder notification only
-                        if (notificationsEnabled && isNewDistraction) {
-                            this.sendDesktopNotification(
-                                'Focus Check (Lenient Mode)',
-                                `Currently in "${distractionName}". Remember your focus goal: ${firstSelected}`,
-                                { appKey: 'distraction_' + distractionName, type: 'info' }
-                            );
-                        }
-                    }
 
-                    this.sendFocusUpdate(distractionName, 'distracted');
+                        const distData = this.distractionApps.get(distractionName) || { timeSpent: 0, attempts: 0 };
+                        distData.timeSpent += deltaSeconds;
+                        if (isNewDistraction) {
+                            distData.attempts += 1;
+                        }
+                        this.distractionApps.set(distractionName, distData);
+
+                        const firstSelected = Array.from(this.selectedApps)[0] || 'Selected Task';
+
+                        if (mode === 'aggressive') {
+                            // Aggressive: Immediately return to a selected or allowed app.
+                            await this.bringSelectedAppsToForeground();
+                            if (notificationsEnabled && isNewDistraction) {
+                                this.sendDesktopNotification(
+                                    'Focus Restored (Aggressive)',
+                                    `Redirected from "${distractionName}" back to ${firstSelected}.`,
+                                    { appKey: 'distraction_' + attemptKey, type: 'warning' }
+                                );
+                            }
+                        } else if (mode === 'moderate') {
+                            if (isNewDistraction) {
+                                this.moderateAttempts.add(attemptKey);
+                            }
+                            if (notificationsEnabled && isNewDistraction) {
+                                this.sendDesktopNotification(
+                                    'Focus Alert (Moderate Mode)',
+                                    `Click "${distractionName}" again to continue, or return to ${firstSelected}.`,
+                                    { appKey: 'distraction_' + attemptKey, type: 'warning' }
+                                );
+                            }
+                            await this.bringSelectedAppsToForeground();
+                        } else if (mode === 'lenient') {
+                            // Lenient: Track the app and send a reminder without blocking it.
+                            if (notificationsEnabled && isNewDistraction) {
+                                this.sendDesktopNotification(
+                                    'Focus Check (Lenient Mode)',
+                                    `Currently in "${distractionName}". Remember your focus goal: ${firstSelected}`,
+                                    { appKey: 'distraction_' + attemptKey, type: 'info' }
+                                );
+                            }
+                        }
+
+                        this.sendFocusUpdate(distractionName, 'distracted');
+                    }
                 }
 
                 this.lastActiveAppName = activeName;
@@ -726,35 +802,23 @@ class FocusManager {
     }
 
     /**
-     * Initial launch at session start: Launches or activates selected & allowed apps
+     * Start the primary selected apps; allowed apps remain available on demand.
      */
     async initialLaunchApps() {
         const runningProcs = await NativeWindows.getRunningProcesses();
 
-        // 1. Launch / activate selected apps
         for (const appName of this.selectedApps) {
+            if (this.isAppBlocked(appName)) continue;
             try {
                 const running = await NativeWindows.isProcessRunning(appName, runningProcs);
                 if (running) {
                     await NativeWindows.activateApp(appName);
                 } else {
-                    this.launchCooldowns.set(this.normalizeName(appName), Date.now());
+                    this.launchCooldowns.set(this.normalizeName(appName), { lastLaunch: Date.now(), attempts: 1 });
                     await this.openApp(appName);
                 }
             } catch (e) {
                 console.warn(`Could not launch selected app ${appName}:`, e.message);
-            }
-        }
-
-        // 2. Launch / activate allowed apps
-        for (const appName of this.allowedApps) {
-            try {
-                const running = await NativeWindows.isProcessRunning(appName, runningProcs);
-                if (running) {
-                    await NativeWindows.activateApp(appName);
-                }
-            } catch (e) {
-                console.warn(`Could not activate allowed app ${appName}:`, e.message);
             }
         }
     }
@@ -765,6 +829,7 @@ class FocusManager {
     async bringSelectedAppsToForeground() {
         // Activate the first available selected app
         for (const appName of this.selectedApps) {
+            if (this.isAppBlocked(appName)) continue;
             try {
                 const activated = await NativeWindows.activateApp(appName);
                 if (activated) return true;
@@ -773,6 +838,7 @@ class FocusManager {
 
         // Fallback to allowed app
         for (const appName of this.allowedApps) {
+            if (this.isAppBlocked(appName)) continue;
             try {
                 const activated = await NativeWindows.activateApp(appName);
                 if (activated) return true;
