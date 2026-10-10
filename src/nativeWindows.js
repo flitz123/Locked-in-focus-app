@@ -503,6 +503,34 @@ if ($h -ne [IntPtr]::Zero) {
         return killedAny;
     }
 
+    static async killProcessByPid(pid) {
+        if (process.platform !== 'win32') return false;
+
+        const processId = Number(pid);
+        if (!Number.isSafeInteger(processId) || processId <= 0) return false;
+        if (processId === process.pid) return false;
+
+        const protectedNames = new Set([
+            'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon',
+            'dwm', 'svchost', 'taskhostw', 'sihost', 'system', 'idle',
+            'runtimebroker', 'shellexperiencehost', 'searchapp',
+            'textinputhost', 'conhost'
+        ]);
+        const runningProcs = await this.getRunningProcesses();
+        const target = runningProcs.find(proc => Number(proc.pid) === processId);
+        if (!target || protectedNames.has((target.name || '').toLowerCase())) return false;
+
+        try {
+            await execFilePromise('taskkill.exe', ['/F', '/PID', String(processId), '/T'], { timeout: 1000 });
+            return true;
+        } catch (error) {
+            if (error.code !== 'ESRCH') {
+                console.warn(`Could not terminate process ${processId}:`, error.message);
+            }
+            return false;
+        }
+    }
+
     static titleMatchesApp(title, appName) {
         const normalizedTitle = (title || '').toLowerCase();
         const normalizedName = (appName || '').toLowerCase().replace(/\.exe$/i, '').trim();

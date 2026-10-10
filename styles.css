@@ -1028,6 +1028,16 @@ body {
 .modal-body {
     padding: 24px;
     overflow-y: auto;
+}
+
+.approval-app-name {
+    margin-bottom: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.approval-message {
+    color: var(--text-secondary);
     flex: 1;
 }
 

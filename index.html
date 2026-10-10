@@ -365,14 +365,14 @@
                             <label for="checkInterval">Active Window Check Interval (ms)</label>
                             <input type="number" id="checkInterval" class="form-control" 
                                    value="1500" min="500" max="10000" step="500">
-                            <small>Frequency of foreground window validation (1000ms - 2000ms recommended).</small>
+                            <small>Frequency of foreground window validation (1000ms - 2000ms recommended). Aggressive mode checks every 500ms.</small>
                         </div>
 
                         <div class="form-group">
                             <label for="focusMode">Lock Strictness Mode</label>
                             <select id="focusMode" class="form-control">
-                                <option value="aggressive" selected>Aggressive (Immediate Safe Browser block & refocus)</option>
-                                <option value="moderate">Moderate (Standard refocus & notifications)</option>
+                                <option value="aggressive" selected>Aggressive (Close unauthorized apps and refocus)</option>
+                                <option value="moderate">Moderate (Ask before opening unauthorized apps)</option>
                                 <option value="lenient">Lenient (Log stats only)</option>
                             </select>
                         </div>
@@ -544,15 +544,16 @@
         <div class="modal-dialog modal-sm">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h3><i class="fas fa-exclamation-triangle text-warning"></i> Access Request</h3>
+                    <h3><i class="fas fa-exclamation-triangle text-warning"></i> <span id="approvalTitle">Focus session check</span></h3>
                     <button class="close-btn" id="closeApprovalBtn">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <p class="approval-app-name" id="approvalAppName"></p>
                     <p class="approval-message" id="approvalMessage"></p>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn btn-danger" id="denyAppBtn">Block & Close</button>
-                    <button class="btn btn-success" id="approveAppBtn">Allow Temporarily</button>
+                    <button class="btn btn-outline" id="denyAppBtn">Cancel</button>
+                    <button class="btn btn-success" id="approveAppBtn">Open Anyway</button>
                 </div>
             </div>
         </div>

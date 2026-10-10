@@ -12,6 +12,7 @@ class FocusAppRenderer {
         this.activeCategoryFilter = 'all';
         this.activePackageTab = 'all';
         this.selectedUploadFiles = [];
+        this.currentApprovalRequestId = null;
 
         this.currentFocusData = {
             currentApp: 'None',
@@ -100,14 +101,22 @@ class FocusAppRenderer {
         document.querySelectorAll('.modal .close-btn, .modal .close').forEach(closeBtn => {
             closeBtn.addEventListener('click', (e) => {
                 const modal = e.target.closest('.modal');
-                if (modal) modal.style.display = 'none';
+                if (modal && modal.id === 'appApprovalModal') {
+                    this.handleAppApproval(false);
+                } else if (modal) {
+                    modal.style.display = 'none';
+                }
             });
         });
 
         // Click outside modal dialog to dismiss
         window.addEventListener('click', (e) => {
             if (e.target.classList.contains('modal')) {
-                e.target.style.display = 'none';
+                if (e.target.id === 'appApprovalModal') {
+                    this.handleAppApproval(false);
+                } else {
+                    e.target.style.display = 'none';
+                }
             }
         });
 
@@ -278,6 +287,56 @@ class FocusAppRenderer {
 
         } catch (error) {
             console.error('Error loading initial data:', error);
+        }
+    }
+
+    showAppApprovalModal(data) {
+        const modal = document.getElementById('appApprovalModal');
+        const title = document.getElementById('approvalTitle');
+        const message = document.getElementById('approvalMessage');
+        const appName = document.getElementById('approvalAppName');
+        const approveButton = document.getElementById('approveAppBtn');
+        const denyButton = document.getElementById('denyAppBtn');
+        if (!modal || !title || !message || !appName || !approveButton || !denyButton) {
+            console.error('Could not display app access prompt: approval modal elements are missing');
+            return;
+        }
+
+        this.currentApprovalRequestId = data.requestId;
+        appName.textContent = data.appName || 'Unknown application';
+        if (data.blocked) {
+            title.textContent = 'Application Blocked';
+            message.textContent = 'This application is on your blocked list and cannot be opened during this focus session.';
+            approveButton.hidden = true;
+            denyButton.textContent = 'Close';
+        } else {
+            title.textContent = 'Focus session check';
+            message.textContent = "This application isn't part of your focus session. You can continue, but this application is not in your Selected or Allowed apps.";
+            approveButton.hidden = false;
+            approveButton.textContent = 'Open Anyway';
+            denyButton.textContent = 'Cancel';
+        }
+        modal.style.display = 'flex';
+    }
+
+    async handleAppApproval(approved) {
+        const modal = document.getElementById('appApprovalModal');
+        const requestId = this.currentApprovalRequestId;
+        this.currentApprovalRequestId = null;
+        if (modal) modal.style.display = 'none';
+        if (!requestId) return;
+
+        try {
+            const result = await ipcRenderer.invoke('handle-app-approval', requestId, approved);
+            if (!result || !result.success) {
+                this.showNotification(
+                    `Could not process the app access request: ${result ? result.error : 'Unknown error'}`,
+                    'error'
+                );
+            }
+        } catch (error) {
+            console.error('Error handling app access request:', error);
+            this.showNotification(`Could not process the app access request: ${error.message}`, 'error');
         }
     }
 
