@@ -36,6 +36,12 @@ class FocusAppRenderer {
             });
         });
 
+        document.querySelectorAll('[data-nav-target]').forEach(button => {
+            button.addEventListener('click', () => {
+                this.handleNavigation(button.dataset.navTarget);
+            });
+        });
+
         // Dashboard quick actions
         const quickScanBtn = document.getElementById('dashQuickScanBtn');
         if (quickScanBtn) {
@@ -350,6 +356,9 @@ class FocusAppRenderer {
         switch (navId) {
             case 'nav-dashboard':
                 document.getElementById('dashboardSection').classList.add('active');
+                break;
+            case 'nav-how-to-use':
+                document.getElementById('howToUseSection').classList.add('active');
                 break;
             case 'nav-apps':
                 document.getElementById('appsSection').classList.add('active');

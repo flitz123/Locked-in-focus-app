@@ -32,9 +32,6 @@ class FocusManager {
             autoStart: false
         };
 
-        // Launch cooldown map to prevent endless spawn loops
-        this.launchCooldowns = new Map();
-        this.launchFailureNotifications = new Set();
         this.isChecking = false;
 
         // Notification anti-loop tracking
@@ -183,11 +180,21 @@ class FocusManager {
     findMatchingAppInSet(set, activeInfo) {
         for (const item of set) {
             const appName = this.getAppName(item);
-            if (this.matchesApp(activeInfo, appName)) {
+            if (this.matchesApp(activeInfo, appName) ||
+                (typeof activeInfo === 'string' && this.matchesApp(appName, activeInfo))) {
                 return appName;
             }
         }
         return null;
+    }
+
+    appsMatch(firstApp, secondApp) {
+        const firstName = this.getAppName(firstApp);
+        const secondName = this.getAppName(secondApp);
+        if (this.normalizeName(firstName) === this.normalizeName(secondName)) {
+            return true;
+        }
+        return this.matchesApp(firstName, secondName) || this.matchesApp(secondName, firstName);
     }
 
     isAppSelected(activeInfo) {
@@ -200,6 +207,19 @@ class FocusManager {
 
     isAppBlocked(activeInfo) {
         return !!this.findMatchingAppInSet(this.blockedApps, activeInfo);
+    }
+
+    isFocusApp(activeApp) {
+        if (!activeApp) return false;
+
+        const activePid = Number(activeApp.pid);
+        const focusAppPids = this.getFocusAppProcessIds();
+        if (activePid && focusAppPids.includes(activePid)) return true;
+
+        const processName = this.normalizeName(activeApp.name);
+        const windowTitle = (activeApp.title || '').toLowerCase();
+        return /^(electron|locked-in|locked-in focus|locked-in focus app|locked-in-focus|locked-in-focus-app|lockedinfocus|lockedinfocusapp)$/i.test(processName) &&
+            /locked[- ]in focus app/i.test(windowTitle);
     }
 
     async loadData() {
@@ -372,8 +392,6 @@ class FocusManager {
             this.lastWindowCheck = Date.now();
             this.distractionApps.clear();
             this.appUsageTime.clear();
-            this.launchCooldowns.clear();
-            this.launchFailureNotifications.clear();
             this.temporaryAllowedApps.clear();
             this.pendingApprovals.clear();
             this.pendingApprovalApps.clear();
@@ -396,8 +414,10 @@ class FocusManager {
                 blockedApps: Array.from(this.blockedApps)
             };
 
-            // 1. Immediately terminate any running blocked apps
-            await this.closeBlockedApps();
+            // 1. Enforce blocked apps only in modes that block access.
+            if (mergedSettings.focusMode === 'aggressive' || mergedSettings.focusMode === 'moderate') {
+                await this.closeBlockedApps();
+            }
 
             // 2. Launch / activate selected and allowed apps
             await this.initialLaunchApps();
@@ -441,6 +461,12 @@ class FocusManager {
         } catch (error) {
             console.error('Error starting session:', error);
             this.sessionActive = false;
+            if (this.sessionInterval) {
+                clearInterval(this.sessionInterval);
+                this.sessionInterval = null;
+            }
+            this.currentSession = null;
+            this.sessionStartTime = null;
             return { success: false, error: error.message };
         }
     }
@@ -457,8 +483,6 @@ class FocusManager {
                 this.sessionInterval = null;
             }
 
-            this.launchCooldowns.clear();
-            this.launchFailureNotifications.clear();
             this.temporaryAllowedApps.clear();
             this.pendingApprovals.clear();
             this.pendingApprovalApps.clear();
@@ -589,56 +613,15 @@ class FocusManager {
                     }
                 }
 
-                // Allow slow-starting apps time to register before trying to relaunch them.
-                const BASE_RETRY_MS = 60000;
-                const MAX_RETRIES = 3;
-                for (const selectedApp of this.selectedApps) {
-                    const norm = this.normalizeName(selectedApp);
-                    if (this.isAppBlocked(selectedApp)) {
-                        this.launchCooldowns.delete(norm);
-                        this.launchFailureNotifications.delete(norm);
-                        continue;
-                    }
-                    const isRunning = await NativeWindows.isProcessRunning(selectedApp, runningProcs);
-
-                    if (isRunning) {
-                        this.launchCooldowns.delete(norm);
-                        this.launchFailureNotifications.delete(norm);
-                    } else {
-                        const launchState = this.launchCooldowns.get(norm) || { lastLaunch: 0, attempts: 0 };
-                        const cooldownMs = BASE_RETRY_MS * (2 ** Math.max(0, launchState.attempts - 1));
-                        if (launchState.attempts < MAX_RETRIES && now - launchState.lastLaunch >= cooldownMs) {
-                            console.log(`[Safe Lock] Selected app closed (${selectedApp}). Relaunching...`);
-                            this.launchCooldowns.set(norm, { lastLaunch: now, attempts: launchState.attempts + 1 });
-                            const launched = await this.openApp(selectedApp);
-                            if (!launched) {
-                                console.warn(`Could not relaunch selected app ${selectedApp}`);
-                            }
-                        } else if (
-                            launchState.attempts >= MAX_RETRIES &&
-                            now - launchState.lastLaunch >= cooldownMs &&
-                            !this.launchFailureNotifications.has(norm)
-                        ) {
-                            this.launchFailureNotifications.add(norm);
-                            console.warn(`Relaunch paused after ${MAX_RETRIES} attempts for selected app ${selectedApp}`);
-                            if (notificationsEnabled) {
-                                this.sendDesktopNotification(
-                                    'Selected App Could Not Be Reopened',
-                                    `"${selectedApp}" did not start after several attempts. Open it manually to resume automatic monitoring.`,
-                                    { appKey: 'reopen_failed_' + norm, type: 'error' }
-                                );
-                            }
-                        }
-                    }
+                // 3. DETECT ACTIVE FOREGROUND WINDOW
+                const activeApp = await this.getActiveApplication();
+                if (!activeApp) {
+                    this.lastActiveAppName = null;
+                    return;
                 }
 
-                // 4. DETECT ACTIVE FOREGROUND WINDOW
-                const activeApp = await this.getActiveApplication();
-                const activeName = activeApp ? (activeApp.name || activeApp.title || '') : '';
-                const isOwnProcess = activeApp && Number(activeApp.pid) === process.pid;
-                const isOwnWindow = /^(electron|locked-in|locked-in focus app)$/i.test(activeName) &&
-                    /locked-in focus app/i.test((activeApp && activeApp.title) || '');
-                const isSelf = !!(isOwnProcess || isOwnWindow);
+                const activeName = activeApp.name || activeApp.title || '';
+                const isSelf = this.isFocusApp(activeApp);
 
                 const matchedSelected = this.findMatchingAppInSet(this.selectedApps, activeApp || activeName);
                 const matchedAllowed = this.findMatchingAppInSet(this.allowedApps, activeApp || activeName);
@@ -649,7 +632,12 @@ class FocusManager {
                 const isSystemShell = /^(explorer|taskhostw|dwm|searchapp|shellexperiencehost|textinputhost|applicationframehost|systemsettings)$/i.test(activeName);
                 const isNewDistraction = this.lastActiveAppName !== activeName;
 
-                if (matchedBlocked) {
+                if (isSelf) {
+                    this.focusedTime += deltaSeconds;
+                    this.currentActiveApp = 'Locked-In Focus App';
+                    this.sendFocusUpdate(this.currentActiveApp, 'focused');
+
+                } else if (matchedBlocked) {
                     // USER SWITCHED TO EXPLICITLY BLOCKED APP
                     this.distractedTime += deltaSeconds;
                     const distractionName = matchedBlocked;
@@ -669,21 +657,26 @@ class FocusManager {
                     console.log(`[Focus Enforcement] Blocked app active (${distractionName}) in mode: ${mode}`);
 
                     if (mode === 'aggressive' || mode === 'moderate') {
-                        await NativeWindows.killProcess(matchedBlocked);
-                    }
+                        await this.closeActiveApplication(activeApp, matchedBlocked);
 
-                    if (notificationsEnabled && isNewDistraction) {
-                        this.requestAppApproval(distractionName, true);
+                        if (isNewDistraction) {
+                            await this.bringSelectedAppsToForeground();
+                            this.requestAppApproval(distractionName, true);
+                        }
+                    } else if (mode === 'lenient' && notificationsEnabled && isNewDistraction) {
+                        this.sendDesktopNotification(
+                            'Blocked App Activity (Lenient Mode)',
+                            `"${distractionName}" is blocked in your app list, but Lenient mode only tracks activity.`,
+                            { appKey: 'blocked_' + this.normalizeName(distractionName), type: 'warning' }
+                        );
                     }
 
                     this.sendFocusUpdate(distractionName, 'blocked');
 
-                } else if (matchedSelected || matchedAllowed || matchedTemporaryAllowed || isSelf) {
+                } else if (matchedSelected || matchedAllowed || matchedTemporaryAllowed) {
                     // USER IS FOCUSED ON SELECTED OR ALLOWED APP
                     this.focusedTime += deltaSeconds;
-                    const displayName = isSelf
-                        ? (Array.from(this.selectedApps)[0] || 'Focus App')
-                        : (matchedSelected || matchedAllowed || matchedTemporaryAllowed || activeName);
+                    const displayName = matchedSelected || matchedAllowed || matchedTemporaryAllowed || activeName;
                     this.currentActiveApp = displayName;
 
                     const currentUsage = this.appUsageTime.get(displayName) || 0;
@@ -713,9 +706,7 @@ class FocusManager {
                     const firstSelected = Array.from(this.selectedApps)[0] || 'Selected Task';
 
                     if (mode === 'aggressive') {
-                        if (activeApp && activeApp.pid) {
-                            await NativeWindows.killProcessByPid(activeApp.pid);
-                        }
+                        await this.closeActiveApplication(activeApp, distractionName);
                         await this.bringSelectedAppsToForeground();
                         if (notificationsEnabled && isNewDistraction) {
                             this.sendDesktopNotification(
@@ -726,7 +717,9 @@ class FocusManager {
                         }
                     } else if (mode === 'moderate') {
                         if (isNewDistraction) {
-                            this.requestAppApproval(distractionName, false);
+                            await this.closeActiveApplication(activeApp, distractionName);
+                            await this.bringSelectedAppsToForeground();
+                            this.requestAppApproval(distractionName, false, activeApp.path || activeApp.name || distractionName);
                         }
                     } else if (mode === 'lenient') {
                         if (notificationsEnabled && isNewDistraction) {
@@ -769,9 +762,23 @@ class FocusManager {
             if (fg && (fg.name || fg.title)) {
                 return fg;
             }
-        } catch (e) {}
+        } catch (error) {
+            console.warn('Could not read the foreground application:', error.message);
+        }
 
         return null;
+    }
+
+    getFocusAppProcessIds() {
+        return [process.pid, ...this.getRendererProcessIds()];
+    }
+
+    getRendererProcessIds() {
+        if (!this.mainWindow || this.mainWindow.isDestroyed() ||
+            !this.mainWindow.webContents || typeof this.mainWindow.webContents.getOSProcessId !== 'function') {
+            return [];
+        }
+        return [this.mainWindow.webContents.getOSProcessId()];
     }
 
     /**
@@ -783,14 +790,21 @@ class FocusManager {
             try {
                 const running = await NativeWindows.isProcessRunning(appName);
                 if (running) {
-                    this.launchCooldowns.delete(this.normalizeName(appName));
-                    await NativeWindows.activateApp(appName);
+                    const activated = await NativeWindows.activateApp(appName);
+                    if (!activated) {
+                        const launched = await this.openApp(appName);
+                        if (!launched) {
+                            console.warn(`Could not find a window or launch target for selected app ${appName}`);
+                        }
+                    }
                 } else {
-                    this.launchCooldowns.set(this.normalizeName(appName), { lastLaunch: Date.now(), attempts: 1 });
-                    await this.openApp(appName);
+                    const launched = await this.openApp(appName);
+                    if (!launched) {
+                        console.warn(`Could not launch selected app ${appName}`);
+                    }
                 }
-            } catch (e) {
-                console.warn(`Could not launch selected app ${appName}:`, e.message);
+            } catch (error) {
+                console.warn(`Could not launch selected app ${appName}:`, error.message);
             }
         }
     }
@@ -805,7 +819,12 @@ class FocusManager {
             try {
                 const activated = await NativeWindows.activateApp(appName);
                 if (activated) return true;
-            } catch (e) {}
+                const launched = await this.openApp(appName);
+                if (launched) return true;
+                console.warn(`Could not find a window or launch target for selected app ${appName}`);
+            } catch (error) {
+                console.warn(`Could not restore selected app ${appName}:`, error.message);
+            }
         }
 
         // Fallback to allowed app
@@ -814,10 +833,36 @@ class FocusManager {
             try {
                 const activated = await NativeWindows.activateApp(appName);
                 if (activated) return true;
-            } catch (e) {}
+                const launched = await this.openApp(appName);
+                if (launched) return true;
+                console.warn(`Could not find a window or launch target for allowed app ${appName}`);
+            } catch (error) {
+                console.warn(`Could not restore allowed app ${appName}:`, error.message);
+            }
         }
 
         return false;
+    }
+
+    async closeActiveApplication(activeApp, fallbackName) {
+        if (!activeApp || this.isFocusApp(activeApp)) {
+            return false;
+        }
+
+        const protectedPids = this.getFocusAppProcessIds();
+        const activePid = Number(activeApp.pid);
+        let closed = activePid
+            ? await NativeWindows.killProcessByPid(activePid, protectedPids)
+            : false;
+
+        if (!closed && !protectedPids.includes(activePid)) {
+            closed = await NativeWindows.killProcess(activeApp.name || fallbackName);
+        }
+
+        if (!closed) {
+            console.warn(`Could not close application: ${fallbackName}`);
+        }
+        return closed;
     }
 
     async closeBlockedApps() {
@@ -863,7 +908,7 @@ class FocusManager {
         return await NativeWindows.killProcess(appName);
     }
 
-    requestAppApproval(appName, blocked = false) {
+    requestAppApproval(appName, blocked = false, launchTarget = appName) {
         const appKey = this.normalizeName(appName);
         const existingRequestId = this.pendingApprovalApps.get(appKey);
         const existingRequest = existingRequestId && this.pendingApprovals.get(existingRequestId);
@@ -887,7 +932,7 @@ class FocusManager {
         }
 
         const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        this.pendingApprovals.set(requestId, { appName, appKey, blocked, createdAt: Date.now() });
+        this.pendingApprovals.set(requestId, { appName, appKey, blocked, launchTarget, createdAt: Date.now() });
         this.pendingApprovalApps.set(appKey, requestId);
 
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -905,9 +950,15 @@ class FocusManager {
             if (!cleanName) return { success: false, error: 'App name cannot be empty' };
 
             // Remove from other categories first to avoid collision
-            this.selectedApps.delete(cleanName);
-            this.allowedApps.delete(cleanName);
-            this.blockedApps.delete(cleanName);
+            for (const app of this.selectedApps) {
+                if (this.appsMatch(app, cleanName)) this.selectedApps.delete(app);
+            }
+            for (const app of this.allowedApps) {
+                if (this.appsMatch(app, cleanName)) this.allowedApps.delete(app);
+            }
+            for (const app of this.blockedApps) {
+                if (this.appsMatch(app, cleanName)) this.blockedApps.delete(app);
+            }
 
             if (category === 'selected') {
                 this.selectedApps.add(cleanName);
@@ -933,17 +984,23 @@ class FocusManager {
             const clean = appName.trim();
             let removed = false;
 
-            if (this.selectedApps.has(clean)) {
-                this.selectedApps.delete(clean);
-                removed = true;
+            for (const app of this.selectedApps) {
+                if (this.appsMatch(app, clean)) {
+                    this.selectedApps.delete(app);
+                    removed = true;
+                }
             }
-            if (this.allowedApps.has(clean)) {
-                this.allowedApps.delete(clean);
-                removed = true;
+            for (const app of this.allowedApps) {
+                if (this.appsMatch(app, clean)) {
+                    this.allowedApps.delete(app);
+                    removed = true;
+                }
             }
-            if (this.blockedApps.has(clean)) {
-                this.blockedApps.delete(clean);
-                removed = true;
+            for (const app of this.blockedApps) {
+                if (this.appsMatch(app, clean)) {
+                    this.blockedApps.delete(app);
+                    removed = true;
+                }
             }
 
             if (removed) {
@@ -1003,17 +1060,30 @@ class FocusManager {
 
         if (req.blocked) {
             await this.bringSelectedAppsToForeground();
+            this.minimizeMainWindow();
             return { success: true, allowed: false };
         }
 
         if (approved) {
             this.temporaryAllowedApps.add(req.appName);
-            await NativeWindows.activateApp(req.appName);
+            const opened = await this.openApp(req.launchTarget || req.appName);
+            if (!opened) {
+                this.temporaryAllowedApps.delete(req.appName);
+                return { success: false, error: `Could not open ${req.appName}` };
+            }
+            this.minimizeMainWindow();
             return { success: true, allowed: true };
         }
 
         await this.bringSelectedAppsToForeground();
+        this.minimizeMainWindow();
         return { success: true, allowed: false };
+    }
+
+    minimizeMainWindow() {
+        if (this.mainWindow && !this.mainWindow.isDestroyed() && !this.mainWindow.isMinimized()) {
+            this.mainWindow.minimize();
+        }
     }
 }
 

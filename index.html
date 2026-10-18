@@ -23,6 +23,10 @@
                     <i class="fas fa-chart-pie"></i>
                     <span>Dashboard</span>
                 </button>
+                <button class="nav-item" id="nav-how-to-use">
+                    <i class="fas fa-circle-question"></i>
+                    <span>How to Use</span>
+                </button>
                 <button class="nav-item" id="nav-apps">
                     <i class="fas fa-cubes"></i>
                     <span>App Management</span>
@@ -193,6 +197,109 @@
                             <div class="no-apps">No blocked applications yet</div>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <!-- HOW TO USE SECTION -->
+            <section id="howToUseSection" class="content-section">
+                <div class="section-header">
+                    <div>
+                        <h2>How to Use Locked-In</h2>
+                        <p>Set up your apps and focus rules, then start a session from your dashboard.</p>
+                    </div>
+                </div>
+
+                <div class="card guide-intro">
+                    <div class="guide-intro-icon"><i class="fas fa-bullseye"></i></div>
+                    <div>
+                        <h3>A simple focus routine</h3>
+                        <p>Choose the apps you need, decide how firmly you want distractions handled, and start your session. You can review your focus time and blocked attempts when it ends.</p>
+                    </div>
+                </div>
+
+                <div class="guide-section">
+                    <div class="guide-heading">
+                        <span class="guide-step">1</span>
+                        <div>
+                            <h3>Choose your apps</h3>
+                            <p>Open App Management to add an app manually, or use App Detection and select <strong>Deep Scan PC</strong> to find installed apps. Choose <strong>Select</strong>, <strong>Allow</strong>, or <strong>Block</strong> for each app.</p>
+                        </div>
+                    </div>
+                    <div class="guide-grid guide-app-categories">
+                        <article class="guide-card guide-selected">
+                            <div class="guide-card-title"><i class="fas fa-lock"></i><h4>Selected</h4></div>
+                            <p>Your main work apps. Add at least one selected app to start a session. Locked-In launches or activates these when the session begins and returns focus to them when enforcing focus.</p>
+                        </article>
+                        <article class="guide-card guide-allowed">
+                            <div class="guide-card-title"><i class="fas fa-check"></i><h4>Allowed</h4></div>
+                            <p>Useful secondary apps you may switch to during a session, such as a calculator or reference tool. They are permitted, but are not launched automatically at the start.</p>
+                        </article>
+                        <article class="guide-card guide-blocked">
+                            <div class="guide-card-title"><i class="fas fa-ban"></i><h4>Blocked</h4></div>
+                            <p>Apps you want to keep out of the session. In Aggressive and Moderate modes Locked-In closes them, and they cannot be approved for use during that session.</p>
+                        </article>
+                    </div>
+                    <div class="guide-note">
+                        <i class="fas fa-info-circle"></i>
+                        <p>Each app belongs to one category at a time. Blocked takes priority: an app marked blocked is not allowed even if you try to select or allow it. Closing a selected app does not automatically relaunch it.</p>
+                    </div>
+                    <button class="btn btn-outline guide-action" id="guideAppsBtn" data-nav-target="nav-apps">
+                        <i class="fas fa-cubes"></i> Manage apps
+                    </button>
+                </div>
+
+                <div class="guide-section">
+                    <div class="guide-heading">
+                        <span class="guide-step">2</span>
+                        <div>
+                            <h3>Pick a focus mode</h3>
+                            <p>Choose the level of enforcement in Settings. The mode applies when you start the next session; select <strong>Save Preferences</strong> to keep your settings for future launches.</p>
+                        </div>
+                    </div>
+                    <div class="guide-grid guide-modes">
+                        <article class="guide-card guide-mode-aggressive">
+                            <div class="guide-card-title"><i class="fas fa-shield-alt"></i><h4>Aggressive</h4></div>
+                            <p>Closes apps outside your Selected and Allowed lists, then returns focus to a permitted app. Blocked apps are closed. Best when you want firm, automatic enforcement.</p>
+                        </article>
+                        <article class="guide-card guide-mode-moderate">
+                            <div class="guide-card-title"><i class="fas fa-hand-paper"></i><h4>Moderate</h4></div>
+                            <p>Closes an unlisted app and asks whether to reopen it for the rest of the session. Blocked apps remain unavailable and cannot be approved.</p>
+                        </article>
+                        <article class="guide-card guide-mode-lenient">
+                            <div class="guide-card-title"><i class="fas fa-chart-line"></i><h4>Lenient</h4></div>
+                            <p>Tracks time and distractions and may remind you of your goal, but does not close unauthorized or blocked apps. Choose this for awareness rather than restriction.</p>
+                        </article>
+                    </div>
+                    <button class="btn btn-outline guide-action" id="guideSettingsBtn" data-nav-target="nav-settings">
+                        <i class="fas fa-sliders-h"></i> Choose a mode
+                    </button>
+                </div>
+
+                <div class="guide-section">
+                    <div class="guide-heading">
+                        <span class="guide-step">3</span>
+                        <div>
+                            <h3>Name and start your session</h3>
+                            <p>Go to the Dashboard, enter a session name or goal, then select <strong>Start Locked-In Session</strong>. Your selected apps will open or come to the front, and the app will begin monitoring.</p>
+                        </div>
+                    </div>
+                    <div class="guide-grid guide-next-steps">
+                        <article class="guide-card">
+                            <div class="guide-card-title"><i class="fas fa-bell"></i><h4>Notifications</h4></div>
+                            <p>Desktop notifications can tell you when an app is blocked or when Moderate mode needs your decision. Enable them in Settings if you want these reminders.</p>
+                        </article>
+                        <article class="guide-card">
+                            <div class="guide-card-title"><i class="fas fa-stopwatch"></i><h4>While you focus</h4></div>
+                            <p>The Dashboard shows your current app, focused and distracted time, and blocked attempts. In Moderate mode, respond to the approval prompt; approved apps are only temporarily allowed for that session.</p>
+                        </article>
+                        <article class="guide-card">
+                            <div class="guide-card-title"><i class="fas fa-flag-checkered"></i><h4>Finish and review</h4></div>
+                            <p>Select <strong>End Session &amp; View Summary</strong> when you are done. Your summary includes session duration, focus time, productivity, and distraction details; past sessions are available in Session History.</p>
+                        </article>
+                    </div>
+                    <button class="btn btn-success guide-action" id="guideDashboardBtn" data-nav-target="nav-dashboard">
+                        <i class="fas fa-play"></i> Go to Dashboard
+                    </button>
                 </div>
             </section>
 

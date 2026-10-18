@@ -471,7 +471,8 @@ if ($h -ne [IntPtr]::Zero) {
         let killedAny = false;
         const runningProcs = await this.getRunningProcesses();
         const protectedNames = new Set([
-            'electron', 'locked-in', 'locked-in focus app', 'antigravity ide',
+            'electron', 'locked-in', 'locked-in focus', 'locked-in focus app', 'antigravity ide',
+            'locked-in-focus', 'locked-in-focus-app', 'lockedinfocus', 'lockedinfocusapp',
             'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon', 'dwm',
             'svchost', 'taskhostw', 'sihost', 'system', 'idle', 'runtimebroker',
             'shellexperiencehost', 'searchapp', 'textinputhost', 'conhost', 'node'
@@ -503,7 +504,7 @@ if ($h -ne [IntPtr]::Zero) {
         return killedAny;
     }
 
-    static async killProcessByPid(pid) {
+    static async killProcessByPid(pid, protectedPids = []) {
         if (process.platform !== 'win32') return false;
 
         const processId = Number(pid);
@@ -514,8 +515,15 @@ if ($h -ne [IntPtr]::Zero) {
             'explorer', 'csrss', 'smss', 'services', 'lsass', 'winlogon',
             'dwm', 'svchost', 'taskhostw', 'sihost', 'system', 'idle',
             'runtimebroker', 'shellexperiencehost', 'searchapp',
-            'textinputhost', 'conhost'
+            'textinputhost', 'conhost', 'electron', 'locked-in',
+            'locked-in focus', 'locked-in focus app', 'locked-in-focus',
+            'locked-in-focus-app', 'lockedinfocus', 'lockedinfocusapp'
         ]);
+        const protectedProcessIds = new Set([
+            process.pid,
+            ...(Array.isArray(protectedPids) ? protectedPids : [])
+        ].map(Number));
+        if (protectedProcessIds.has(processId)) return false;
         const runningProcs = await this.getRunningProcesses();
         const target = runningProcs.find(proc => Number(proc.pid) === processId);
         if (!target || protectedNames.has((target.name || '').toLowerCase())) return false;
@@ -577,12 +585,8 @@ if ($h -ne [IntPtr]::Zero) {
                     }
                 } catch (e) {}
 
-                // Try running with start directly
-                spawn('cmd.exe', ['/c', 'start', '""', appNameOrPath], {
-                    detached: true,
-                    stdio: 'ignore'
-                }).unref();
-                return true;
+                console.warn(`Could not find an executable for ${appNameOrPath}`);
+                return false;
             } else if (process.platform === 'darwin') {
                 spawn('open', ['-a', appNameOrPath], { detached: true, stdio: 'ignore' }).unref();
                 return true;

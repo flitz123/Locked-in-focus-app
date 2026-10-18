@@ -34,26 +34,11 @@ function createWindow() {
         mainWindow.focus();
     });
 
-    // Handle window close when session is active
-    mainWindow.on('close', async (e) => {
+    // Keep the app available while a focus session is running.
+    mainWindow.on('close', (e) => {
         if (focusManager && focusManager.sessionActive) {
             e.preventDefault();
-            const choice = dialog.showMessageBoxSync(mainWindow, {
-                type: 'question',
-                buttons: ['End Session & View Summary', 'Cancel'],
-                defaultId: 0,
-                cancelId: 1,
-                title: 'Active Focus Session',
-                message: 'A focus session is currently running. Do you want to end the session and view your summary before closing?'
-            });
-
-            if (choice === 0) {
-                await focusManager.stopSession();
-                // After session summary is generated and saved, close window
-                setTimeout(() => {
-                    mainWindow.destroy();
-                }, 500);
-            }
+            mainWindow.minimize();
         }
     });
 

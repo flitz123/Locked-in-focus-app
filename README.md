@@ -4,10 +4,10 @@ A Windows productivity application that helps you stay focused by blocking distr
 
 ## Features
 
-- **Focus Sessions**: Selected apps are the primary session apps and are launched or activated at startup; allowed apps are optional apps the user may switch to during the session
+- **Focus Sessions**: Selected apps are launched or activated at startup; allowed apps are optional apps the user may switch to during the session. The focus window stays running in the background during a session, and closing a selected app does not cause it to relaunch automatically
 - **Application Blocking**: Block distracting applications during focus sessions
 - **Smart Monitoring**: Automatic detection of foreground applications
-- **Focus Modes**: Aggressive closes unauthorized foreground apps and restores focus; Moderate asks before temporarily allowing an unlisted app for the session; Lenient tracks activity without blocking. Explicitly blocked apps cannot be approved during a session.
+- **Focus Modes**: Aggressive closes unauthorized foreground apps and restores focus; Moderate closes unauthorized apps, asks whether to reopen them for the session, and returns the focus window to the background after your choice; Lenient tracks activity without blocking. Explicitly blocked apps cannot be approved during a session.
 - **Blocked Apps**: Explicitly blocked applications remain inaccessible in Aggressive and Moderate modes
 - **Session Analytics**: Detailed reports on focused time, distractions, and blocked attempts
 - **Deep App Discovery**: Comprehensive scanning of installed applications
