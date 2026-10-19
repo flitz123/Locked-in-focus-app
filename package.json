@@ -8,6 +8,7 @@
         "dev": "electron . --dev",
         "test": "node --test",
         "build": "electron-builder",
+        "build-win": "electron-builder --win nsis",
         "pack": "electron-builder --dir"
     },
     "keywords": [

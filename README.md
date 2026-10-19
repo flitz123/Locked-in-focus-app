@@ -31,5 +31,5 @@ npm start
 # Build for Windows
 npm run build-win
 
-# Create distribution package
-npm run dist
+# Create an unpacked distribution directory
+npm run pack

@@ -23,6 +23,7 @@ class FocusManager {
         this.pendingApprovalApps = new Map();
         this.appScanner = new AppScanner();
         this.temporaryAllowedApps = new Set();
+        this.parentProcessIds = new Set();
 
         // User Settings / Preferences
         this.settings = {
@@ -383,6 +384,16 @@ class FocusManager {
         try {
             // Merge session settings with stored preferences
             const mergedSettings = Object.assign({}, this.settings, settings);
+
+            const parentProcessIds = [process.ppid];
+            try {
+                parentProcessIds.push(...await NativeWindows.getProcessAncestorIds(process.pid));
+            } catch (error) {
+                console.warn('Could not determine the full launcher process ancestry; protecting the direct parent only:', error.message);
+            }
+            this.parentProcessIds = new Set(parentProcessIds.filter(pid =>
+                Number.isSafeInteger(Number(pid)) && Number(pid) > 0
+            ).map(Number));
 
             this.sessionActive = true;
             this.sessionStartTime = Date.now();
@@ -770,7 +781,7 @@ class FocusManager {
     }
 
     getFocusAppProcessIds() {
-        return [process.pid, ...this.getRendererProcessIds()];
+        return [process.pid, ...this.getRendererProcessIds(), ...this.parentProcessIds];
     }
 
     getRendererProcessIds() {

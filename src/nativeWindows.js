@@ -362,6 +362,48 @@ if ($h -ne [IntPtr]::Zero) {
         }
     }
 
+    static async getProcessAncestorIds(pid = process.pid) {
+        if (process.platform !== 'win32') return [];
+
+        const processId = Number(pid);
+        if (!Number.isSafeInteger(processId) || processId <= 0) {
+            throw new Error(`Invalid process ID: ${pid}`);
+        }
+
+        const script = `
+$target = ${processId}
+$processes = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+$parentById = @{}
+foreach ($process in $processes) {
+    $parentById[[int]$process.ProcessId] = [int]$process.ParentProcessId
+}
+$parents = @()
+$current = [int]$target
+while ($parentById.ContainsKey($current)) {
+    $parent = $parentById[$current]
+    if ($parent -le 0 -or $parent -eq $current -or $parents -contains $parent) { break }
+    $parents += $parent
+    $current = $parent
+}
+ConvertTo-Json -InputObject @($parents) -Compress
+`;
+        const encoded = Buffer.from(script, 'utf16le').toString('base64');
+        const { stdout } = await execFilePromise('powershell.exe', [
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-EncodedCommand', encoded
+        ], { timeout: 5000 });
+
+        const parentIds = JSON.parse(stdout.trim());
+        if (!Array.isArray(parentIds)) {
+            throw new Error('Windows returned an invalid process ancestry response');
+        }
+        return parentIds.map(Number).filter(parentId =>
+            Number.isSafeInteger(parentId) && parentId > 0
+        );
+    }
+
     static async activateApp(appNameOrProcess) {
         if (process.platform !== 'win32') return false;
         if (!appNameOrProcess) return false;

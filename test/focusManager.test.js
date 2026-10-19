@@ -17,6 +17,7 @@ Module._load = originalLoad;
 
 const nativeMethods = [
     'getRunningProcesses',
+    'getProcessAncestorIds',
     'getForegroundWindow',
     'isProcessRunning',
     'killProcess',
@@ -43,6 +44,7 @@ test.beforeEach(() => {
     minimizedWindows = 0;
 
     NativeWindows.getRunningProcesses = async () => [];
+    NativeWindows.getProcessAncestorIds = async () => [1010, 2020];
     NativeWindows.getForegroundWindow = async () => foregroundApplication;
     NativeWindows.isProcessRunning = async () => false;
     NativeWindows.killProcess = async name => {
@@ -157,6 +159,22 @@ test('starting a focus session keeps its window alive and minimizes it', async (
     assert.equal(manager.sessionActive, true);
     assert.equal(manager.mainWindow.isDestroyed(), false);
     assert.equal(minimizedWindows, 1);
+    assert.deepEqual(Array.from(manager.parentProcessIds), [process.ppid, 1010, 2020]);
+});
+
+test('launcher process ancestors are protected from foreground termination', async () => {
+    const manager = createManager('aggressive');
+    manager.parentProcessIds.add(5050);
+
+    const closed = await manager.closeActiveApplication({
+        name: 'Code',
+        title: 'Visual Studio Code',
+        pid: 5050
+    }, 'Code');
+
+    assert.equal(closed, false);
+    assert.deepEqual(terminatedPids, []);
+    assert.deepEqual(terminatedNames, []);
 });
 
 test('an unavailable foreground window does not trigger enforcement', async () => {
